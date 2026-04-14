@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "Referee": {
+      "title": "Referee",
+      "description": "A referee in the system",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the referee" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "A match category with associated fees",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Category name (e.g., 1er division)" },
+        "centralFee": { "type": "number", "description": "Fee for central referee" },
+        "assistantFee": { "type": "number", "description": "Fee for assistant referee" },
+        "fourthFee": { "type": "number", "description": "Fee for 4th referee" }
+      },
+      "required": ["name", "centralFee", "assistantFee", "fourthFee"]
+    },
+    "Designation": {
+      "title": "Designation",
+      "description": "A match designation for referees",
+      "type": "object",
+      "properties": {
+        "categoryId": { "type": "string" },
+        "centralId": { "type": "string" },
+        "assistant1Id": { "type": "string" },
+        "assistant2Id": { "type": "string" },
+        "fourthId": { "type": "string" },
+        "date": { "type": "string" },
+        "teamA": { "type": "string" },
+        "teamB": { "type": "string" },
+        "matchNumber": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" }
+      },
+      "required": ["categoryId", "centralId", "assistant1Id", "assistant2Id", "fourthId", "date", "teamA", "teamB", "matchNumber"]
+    }
+  },
+  "firestore": {
+    "/referees": { "schema": "Referee", "description": "Referees list" },
+    "/categories": { "schema": "Category", "description": "Categories list" },
+    "/designations": { "schema": "Designation", "description": "Match designations" }
+  }
+}
