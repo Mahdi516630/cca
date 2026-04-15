@@ -52,13 +52,19 @@ export default function App() {
   const [newReferee, setNewReferee] = useState({ name: '', phone: '' });
   const [editingReferee, setEditingReferee] = useState<Referee | null>(null);
   const [newCategory, setNewCategory] = useState({ name: '', centralFee: 0, assistantFee: 0, fourthFee: 0 });
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [newDesignation, setNewDesignation] = useState<Partial<Designation>>({
-    date: '', teamA: '', teamB: '', matchNumber: '', startTime: '', endTime: ''
+    date: '', teamA: '', teamB: '', matchNumber: '', startTime: '', endTime: '',
+    categoryId: '', centralId: '', assistant1Id: '', assistant2Id: '', fourthId: ''
   });
+  const [editingDesignation, setEditingDesignation] = useState<Designation | null>(null);
   const [timeFilter, setTimeFilter] = useState<'all' | 'week' | 'month' | 'quarter' | 'year'>('month');
+  const [refereeSearch, setRefereeSearch] = useState('');
+  const [categorySearch, setCategorySearch] = useState('');
 
   // API Helper
   const api = async (path: string, options: any = {}) => {
+    console.log(`API Call: ${path}`, options.body ? JSON.parse(options.body) : '');
     const res = await fetch(path, {
       ...options,
       headers: {
@@ -69,13 +75,13 @@ export default function App() {
     });
     if (res.status === 401) {
       handleLogout();
-      throw new Error('Unauthorized');
+      throw new Error('Session expirée, veuillez vous reconnecter');
     }
+    const data = await res.json();
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'API Error');
+      throw new Error(data.error || 'Erreur serveur');
     }
-    return res.json();
+    return data;
   };
 
   useEffect(() => {
@@ -169,6 +175,38 @@ export default function App() {
     }
   };
 
+  const handleUpdateCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCategory || !editingCategory.name.trim()) return;
+    try {
+      await api(`/api/categories/${editingCategory.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(editingCategory),
+      });
+      setEditingCategory(null);
+      fetchData();
+      toast.success('Catégorie mise à jour');
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
+  const handleUpdateDesignation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDesignation || !editingDesignation.categoryId || !editingDesignation.centralId) return;
+    try {
+      await api(`/api/designations/${editingDesignation.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(editingDesignation),
+      });
+      setEditingDesignation(null);
+      fetchData();
+      toast.success('Désignation mise à jour');
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
   const addCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCategory.name.trim()) return;
@@ -188,14 +226,20 @@ export default function App() {
 
   const addDesignation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newDesignation.categoryId || !newDesignation.centralId) return;
+    if (!newDesignation.categoryId || !newDesignation.centralId) {
+      toast.error('Veuillez sélectionner au moins une catégorie et un arbitre central');
+      return;
+    }
     const id = Math.random().toString(36).substr(2, 9);
     try {
       await api('/api/designations', {
         method: 'POST',
         body: JSON.stringify({ ...newDesignation, id }),
       });
-      setNewDesignation({ date: '', teamA: '', teamB: '', matchNumber: '', startTime: '', endTime: '' });
+      setNewDesignation({ 
+        date: '', teamA: '', teamB: '', matchNumber: '', startTime: '', endTime: '',
+        categoryId: '', centralId: '', assistant1Id: '', assistant2Id: '', fourthId: ''
+      });
       fetchData();
       toast.success('Désignation enregistrée');
     } catch (error: any) {
@@ -349,8 +393,16 @@ export default function App() {
               </Card>
 
               <Card className="lg:col-span-2 border-none shadow-md">
-                <CardHeader>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0">
                   <CardTitle>Liste des Arbitres</CardTitle>
+                  <div className="w-64">
+                    <Input 
+                      placeholder="Rechercher un arbitre..." 
+                      value={refereeSearch}
+                      onChange={(e) => setRefereeSearch(e.target.value)}
+                      className="h-8"
+                    />
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <ScrollArea className="h-[400px]">
@@ -363,7 +415,9 @@ export default function App() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {referees.map((ref) => (
+                        {referees
+                          .filter(r => r.name.toLowerCase().includes(refereeSearch.toLowerCase()))
+                          .map((ref) => (
                           <TableRow key={ref.id}>
                             <TableCell className="font-medium">{ref.name}</TableCell>
                             <TableCell>{ref.phone || '-'}</TableCell>
@@ -435,8 +489,16 @@ export default function App() {
               </Card>
 
               <Card className="lg:col-span-2 border-none shadow-md">
-                <CardHeader>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0">
                   <CardTitle>Catégories & Tarifs</CardTitle>
+                  <div className="w-64">
+                    <Input 
+                      placeholder="Rechercher une catégorie..." 
+                      value={categorySearch}
+                      onChange={(e) => setCategorySearch(e.target.value)}
+                      className="h-8"
+                    />
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto">
@@ -451,13 +513,18 @@ export default function App() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {categories.map((cat) => (
+                        {categories
+                          .filter(c => c.name.toLowerCase().includes(categorySearch.toLowerCase()))
+                          .map((cat) => (
                           <TableRow key={cat.id}>
                             <TableCell className="font-medium">{cat.name}</TableCell>
                             <TableCell>{cat.centralFee} FDJ</TableCell>
                             <TableCell>{cat.assistantFee} FDJ</TableCell>
                             <TableCell>{cat.fourthFee} FDJ</TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right space-x-2">
+                              <Button variant="ghost" size="icon" onClick={() => setEditingCategory(cat)}>
+                                <Pencil className="w-4 h-4 text-primary" />
+                              </Button>
                               <Button variant="ghost" size="icon" onClick={() => deleteItem('categories', cat.id)}>
                                 <Trash2 className="w-4 h-4 text-destructive" />
                               </Button>
@@ -481,7 +548,10 @@ export default function App() {
                 <form onSubmit={addDesignation} className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                   <div className="space-y-2">
                     <Label>Catégorie</Label>
-                    <Select onValueChange={(v) => setNewDesignation({...newDesignation, categoryId: v})}>
+                    <Select 
+                      value={newDesignation.categoryId || ""} 
+                      onValueChange={(v) => setNewDesignation({...newDesignation, categoryId: v})}
+                    >
                       <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
                       <SelectContent>
                         {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
@@ -490,7 +560,10 @@ export default function App() {
                   </div>
                   <div className="space-y-2">
                     <Label>Arbitre Central</Label>
-                    <Select onValueChange={(v) => setNewDesignation({...newDesignation, centralId: v})}>
+                    <Select 
+                      value={newDesignation.centralId || ""} 
+                      onValueChange={(v) => setNewDesignation({...newDesignation, centralId: v})}
+                    >
                       <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
                       <SelectContent>
                         {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
@@ -499,27 +572,39 @@ export default function App() {
                   </div>
                   <div className="space-y-2">
                     <Label>Assistant 1</Label>
-                    <Select onValueChange={(v) => setNewDesignation({...newDesignation, assistant1Id: v})}>
+                    <Select 
+                      value={newDesignation.assistant1Id || ""} 
+                      onValueChange={(v) => setNewDesignation({...newDesignation, assistant1Id: v})}
+                    >
                       <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="none">Aucun</SelectItem>
                         {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="space-y-2">
                     <Label>Assistant 2</Label>
-                    <Select onValueChange={(v) => setNewDesignation({...newDesignation, assistant2Id: v})}>
+                    <Select 
+                      value={newDesignation.assistant2Id || ""} 
+                      onValueChange={(v) => setNewDesignation({...newDesignation, assistant2Id: v})}
+                    >
                       <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="none">Aucun</SelectItem>
                         {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="space-y-2">
                     <Label>4ème Arbitre</Label>
-                    <Select onValueChange={(v) => setNewDesignation({...newDesignation, fourthId: v})}>
+                    <Select 
+                      value={newDesignation.fourthId || ""} 
+                      onValueChange={(v) => setNewDesignation({...newDesignation, fourthId: v})}
+                    >
                       <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="none">Aucun</SelectItem>
                         {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -558,8 +643,11 @@ export default function App() {
             </Card>
 
             <Card className="mt-6 border-none shadow-md">
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0">
                 <CardTitle>Historique des Désignations</CardTitle>
+                <Badge variant="secondary" className="text-sm">
+                  {designations.length} Désignations au total
+                </Badge>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -584,7 +672,10 @@ export default function App() {
                               {categories.find(c => c.id === d.categoryId)?.name || 'N/A'}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="text-right space-x-2">
+                            <Button variant="ghost" size="icon" onClick={() => setEditingDesignation(d)}>
+                              <Pencil className="w-4 h-4 text-primary" />
+                            </Button>
                             <Button variant="ghost" size="icon" onClick={() => deleteItem('designations', d.id)}>
                               <Trash2 className="w-4 h-4 text-destructive" />
                             </Button>
@@ -727,6 +818,146 @@ export default function App() {
                 <Button type="button" variant="outline" onClick={() => setEditingReferee(null)}>Annuler</Button>
                 <Button type="submit">Enregistrer les modifications</Button>
               </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!editingCategory} onOpenChange={(open) => !open && setEditingCategory(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Modifier la Catégorie</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleUpdateCategory} className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>Nom de la catégorie</Label>
+                <Input 
+                  value={editingCategory?.name || ''} 
+                  onChange={(e) => editingCategory && setEditingCategory({...editingCategory, name: e.target.value})} 
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Central (FDJ)</Label>
+                  <Input 
+                    type="number" 
+                    value={editingCategory?.centralFee || 0} 
+                    onChange={(e) => editingCategory && setEditingCategory({...editingCategory, centralFee: Number(e.target.value)})} 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Assistant (FDJ)</Label>
+                  <Input 
+                    type="number" 
+                    value={editingCategory?.assistantFee || 0} 
+                    onChange={(e) => editingCategory && setEditingCategory({...editingCategory, assistantFee: Number(e.target.value)})} 
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>4ème Arbitre (FDJ)</Label>
+                <Input 
+                  type="number" 
+                  value={editingCategory?.fourthFee || 0} 
+                  onChange={(e) => editingCategory && setEditingCategory({...editingCategory, fourthFee: Number(e.target.value)})} 
+                />
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEditingCategory(null)}>Annuler</Button>
+                <Button type="submit">Enregistrer les modifications</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!editingDesignation} onOpenChange={(open) => !open && setEditingDesignation(null)}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Modifier la Désignation</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleUpdateDesignation} className="grid sm:grid-cols-2 gap-4 py-4">
+              <div className="space-y-2">
+                <Label>Date</Label>
+                <Input type="date" value={editingDesignation?.date || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, date: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>N° Match</Label>
+                <Input value={editingDesignation?.matchNumber || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, matchNumber: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Équipe A</Label>
+                <Input value={editingDesignation?.teamA || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, teamA: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Équipe B</Label>
+                <Input value={editingDesignation?.teamB || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, teamB: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Catégorie</Label>
+                <Select 
+                  value={editingDesignation?.categoryId || ""} 
+                  onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, categoryId: v})}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectContent>
+                    {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Arbitre Central</Label>
+                <Select 
+                  value={editingDesignation?.centralId || ""} 
+                  onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, centralId: v})}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectContent>
+                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Assistant 1</Label>
+                <Select 
+                  value={editingDesignation?.assistant1Id || "none"} 
+                  onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, assistant1Id: v})}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Aucun</SelectItem>
+                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Assistant 2</Label>
+                <Select 
+                  value={editingDesignation?.assistant2Id || "none"} 
+                  onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, assistant2Id: v})}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Aucun</SelectItem>
+                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>4ème Arbitre</Label>
+                <Select 
+                  value={editingDesignation?.fourthId || "none"} 
+                  onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, fourthId: v})}
+                >
+                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Aucun</SelectItem>
+                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-full flex justify-end gap-2 mt-4">
+                <Button type="button" variant="outline" onClick={() => setEditingDesignation(null)}>Annuler</Button>
+                <Button type="submit">Enregistrer les modifications</Button>
+              </div>
             </form>
           </DialogContent>
         </Dialog>

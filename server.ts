@@ -44,9 +44,9 @@ async function initDb() {
       CREATE TABLE IF NOT EXISTS categories (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        "centralFee" INTEGER DEFAULT 0,
-        "assistantFee" INTEGER DEFAULT 0,
-        "fourthFee" INTEGER DEFAULT 0
+        centralfee INTEGER DEFAULT 0,
+        assistantfee INTEGER DEFAULT 0,
+        fourthfee INTEGER DEFAULT 0
       );
     `;
 
@@ -54,16 +54,16 @@ async function initDb() {
       CREATE TABLE IF NOT EXISTS designations (
         id TEXT PRIMARY KEY,
         date TEXT,
-        "teamA" TEXT,
-        "teamB" TEXT,
-        "matchNumber" TEXT,
-        "startTime" TEXT,
-        "endTime" TEXT,
-        "categoryId" TEXT REFERENCES categories(id),
-        "centralId" TEXT REFERENCES referees(id),
-        "assistant1Id" TEXT,
-        "assistant2Id" TEXT,
-        "fourthId" TEXT
+        teama TEXT,
+        teamb TEXT,
+        matchnumber TEXT,
+        starttime TEXT,
+        endtime TEXT,
+        categoryid TEXT REFERENCES categories(id),
+        centralid TEXT REFERENCES referees(id),
+        assistant1id TEXT,
+        assistant2id TEXT,
+        fourthid TEXT
       );
     `;
 
@@ -199,10 +199,11 @@ app.get("/api/categories", authenticateToken, async (req, res) => {
 app.post("/api/categories", authenticateToken, async (req, res) => {
   const { id, name, centralFee, assistantFee, fourthFee } = req.body;
   try {
-    await sql`INSERT INTO categories (id, name, "centralFee", "assistantFee", "fourthFee") VALUES (${id}, ${name}, ${centralFee}, ${assistantFee}, ${fourthFee})`;
+    await sql`INSERT INTO categories (id, name, centralfee, assistantfee, fourthfee) VALUES (${id}, ${name}, ${centralFee}, ${assistantFee}, ${fourthFee})`;
     res.status(201).json({ id });
   } catch (error) {
-    res.status(500).json({ error: "Error creating category" });
+    console.error("Error creating category:", error);
+    res.status(500).json({ error: "Error creating category: " + (error instanceof Error ? error.message : String(error)) });
   }
 });
 
@@ -212,6 +213,20 @@ app.delete("/api/categories/:id", authenticateToken, async (req, res) => {
     res.json({ message: "Deleted" });
   } catch (error) {
     res.status(500).json({ error: "Error deleting category" });
+  }
+});
+
+app.put("/api/categories/:id", authenticateToken, async (req, res) => {
+  const { name, centralFee, assistantFee, fourthFee } = req.body;
+  try {
+    await sql`
+      UPDATE categories 
+      SET name = ${name}, centralfee = ${centralFee}, assistantfee = ${assistantFee}, fourthfee = ${fourthFee} 
+      WHERE id = ${req.params.id}
+    `;
+    res.json({ message: "Updated" });
+  } catch (error) {
+    res.status(500).json({ error: "Error updating category" });
   }
 });
 
@@ -239,16 +254,61 @@ app.get("/api/designations", authenticateToken, async (req, res) => {
   }
 });
 
-app.post("/api/designations", authenticateToken, async (req, res) => {
-  const { id, date, teamA, teamB, matchNumber, startTime, endTime, categoryId, centralId, assistant1Id, assistant2Id, fourthId } = req.body;
+app.put("/api/designations/:id", authenticateToken, async (req, res) => {
+  const { 
+    date, teamA, teamB, matchNumber, startTime, endTime, 
+    categoryId, centralId, assistant1Id, assistant2Id, fourthId 
+  } = req.body;
+  
   try {
+    const cleanId = (val: any) => (val === "none" || !val) ? null : val;
     await sql`
-      INSERT INTO designations (id, date, "teamA", "teamB", "matchNumber", "startTime", "endTime", "categoryId", "centralId", "assistant1Id", "assistant2Id", "fourthId")
-      VALUES (${id}, ${date}, ${teamA}, ${teamB}, ${matchNumber}, ${startTime}, ${endTime}, ${categoryId}, ${centralId}, ${assistant1Id}, ${assistant2Id}, ${fourthId})
+      UPDATE designations 
+      SET date = ${date || null}, teama = ${teamA || null}, teamb = ${teamB || null}, 
+          matchnumber = ${matchNumber || null}, starttime = ${startTime || null}, endtime = ${endTime || null}, 
+          categoryid = ${categoryId || null}, centralid = ${centralId || null}, 
+          assistant1id = ${cleanId(assistant1Id)}, assistant2id = ${cleanId(assistant2Id)}, fourthid = ${cleanId(fourthId)}
+      WHERE id = ${req.params.id}
+    `;
+    res.json({ message: "Updated" });
+  } catch (error) {
+    res.status(500).json({ error: "Error updating designation" });
+  }
+});
+
+app.post("/api/designations", authenticateToken, async (req, res) => {
+  const { 
+    id, date, teamA, teamB, matchNumber, startTime, endTime, 
+    categoryId, centralId, assistant1Id, assistant2Id, fourthId 
+  } = req.body;
+  
+  try {
+    const cleanId = (val: any) => (val === "none" || !val) ? null : val;
+
+    await sql`
+      INSERT INTO designations (
+        id, date, teama, teamb, matchnumber, starttime, endtime, 
+        categoryid, centralid, assistant1id, assistant2id, fourthid
+      )
+      VALUES (
+        ${id}, 
+        ${date || null}, 
+        ${teamA || null}, 
+        ${teamB || null}, 
+        ${matchNumber || null}, 
+        ${startTime || null}, 
+        ${endTime || null}, 
+        ${categoryId || null}, 
+        ${centralId || null}, 
+        ${cleanId(assistant1Id)}, 
+        ${cleanId(assistant2Id)}, 
+        ${cleanId(fourthId)}
+      )
     `;
     res.status(201).json({ id });
   } catch (error) {
-    res.status(500).json({ error: "Error creating designation" });
+    console.error("Error creating designation:", error);
+    res.status(500).json({ error: "Error creating designation: " + (error instanceof Error ? error.message : String(error)) });
   }
 });
 
