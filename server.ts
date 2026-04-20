@@ -67,15 +67,24 @@ async function initDb() {
       );
     `;
 
-    // Seed User: mahdiyacoubali318@gmail.com / admin123
-    const email = "mahdiyacoubali318@gmail.com";
-    const password = "admin123";
-    const existingUsers = await sql`SELECT * FROM users WHERE email = ${email}`;
+    // Seed Users
+    const seedUsers = [
+      { email: "mahdiyacoubali318@gmail.com", password: "admin123" },
+      { email: "mahdiyacoubali2004@gmail.com", password: "admin123" }
+    ];
     
-    if (existingUsers.length === 0) {
-      const hashedPassword = bcrypt.hashSync(password, 10);
-      await sql`INSERT INTO users (email, password) VALUES (${email}, ${hashedPassword})`;
-      console.log("Seed user created: " + email);
+    for (const user of seedUsers) {
+      const existing = await sql`SELECT * FROM users WHERE email = ${user.email}`;
+      if (existing.length === 0) {
+        const hashedPassword = bcrypt.hashSync(user.password, 10);
+        await sql`INSERT INTO users (email, password) VALUES (${user.email}, ${hashedPassword})`;
+        console.log("Seed user created: " + user.email);
+      } else {
+        // Optionnel: On s'assure que le mot de passe est bien admin123 pour ces comptes de test si le user insiste
+        const hashedPassword = bcrypt.hashSync(user.password, 10);
+        await sql`UPDATE users SET password = ${hashedPassword} WHERE email = ${user.email}`;
+        console.log("Seed user password reset: " + user.email);
+      }
     }
   } catch (error) {
     console.error("Database initialization error:", error);
@@ -103,7 +112,8 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
 // --- AUTH ROUTES ---
 app.post("/api/auth/register", async (req, res) => {
-  const { email, password } = req.body;
+  const email = req.body.email?.toLowerCase();
+  const { password } = req.body;
   try {
     const hashedPassword = bcrypt.hashSync(password, 10);
     await sql`INSERT INTO users (email, password) VALUES (${email}, ${hashedPassword})`;
@@ -114,7 +124,8 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
+  const email = req.body.email?.toLowerCase();
+  const { password } = req.body;
   try {
     const users = await sql`SELECT * FROM users WHERE email = ${email}`;
     const user: any = users[0];

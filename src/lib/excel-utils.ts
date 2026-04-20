@@ -75,26 +75,46 @@ export const generateRefereeExcelReport = async (
   // --- DATA ROWS ---
   referees.forEach((ref, index) => {
     const row = worksheet.getRow(7 + index);
-    const earningsPerCategory = dynamicCategories.map(cat => {
+    let rowNetTotal = 0;
+    
+    const catDetails = dynamicCategories.map(cat => {
       const relevantDesignations = designations.filter(d => d.categoryId === cat.id);
-      let total = 0;
+      let catTotal = 0;
+      let cCount = 0;
+      let aCount = 0;
+      let fCount = 0;
+      
       relevantDesignations.forEach(d => {
-        if (d.centralId === ref.id) total += cat.centralFee;
-        if (d.assistant1Id === ref.id || d.assistant2Id === ref.id) total += cat.assistantFee;
-        if (d.fourthId === ref.id) total += cat.fourthFee;
+        if (d.centralId === ref.id) {
+          catTotal += cat.centralFee;
+          cCount++;
+        }
+        if (d.assistant1Id === ref.id || d.assistant2Id === ref.id) {
+          catTotal += cat.assistantFee;
+          aCount++;
+        }
+        if (d.fourthId === ref.id) {
+          catTotal += cat.fourthFee;
+          fCount++;
+        }
       });
-      return total || null;
+      
+      rowNetTotal += catTotal;
+      return { total: catTotal, display: catTotal > 0 ? `${catTotal}(${cCount},${aCount},${fCount})` : '' };
     });
-
-    const netToPay = earningsPerCategory.reduce((acc, val) => acc + (val || 0), 0);
 
     row.values = [
       index + 1,
       ref.name.toUpperCase(),
-      ...earningsPerCategory,
-      netToPay,
+      ...catDetails.map(d => d.display),
+      rowNetTotal,
       ref.phone || ''
     ];
+
+    // Store raw totals for summation later in hidden columns or separate objects if needed
+    // But we can just recalculate from rowNetTotal since it's already there
+    (row as any)._rawTotals = catDetails.map(d => d.total);
+    (row as any)._netTotal = rowNetTotal;
 
     // Style data cells
     for (let i = 1; i <= totalCols; i++) {
@@ -120,19 +140,19 @@ export const generateRefereeExcelReport = async (
 
   dynamicCategories.forEach((cat, colIdx) => {
     const colNum = 3 + colIdx;
-    let colTotal = 0;
+    let colSum = 0;
     referees.forEach((_, refIdx) => {
-      const val = worksheet.getRow(7 + refIdx).getCell(colNum).value;
-      colTotal += (Number(val) || 0);
+      const row = worksheet.getRow(7 + refIdx);
+      colSum += ((row as any)._rawTotals?.[colIdx] || 0);
     });
-    totalRow.getCell(colNum).value = colTotal;
+    totalRow.getCell(colNum).value = colSum;
   });
 
   const netColNum = totalCols - 1;
   let grandTotal = 0;
   referees.forEach((_, refIdx) => {
-    const val = worksheet.getRow(7 + refIdx).getCell(netColNum).value;
-    grandTotal += (Number(val) || 0);
+    const row = worksheet.getRow(7 + refIdx);
+    grandTotal += ((row as any)._netTotal || 0);
   });
   totalRow.getCell(netColNum).value = grandTotal;
 

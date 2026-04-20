@@ -58,39 +58,54 @@ export const generateRefereeReport = (
   ];
 
   const refereeEarnings = referees.map((ref, index) => {
-    const earningsPerCategory = dynamicCategories.map(cat => {
+    let rowNetTotal = 0;
+    const catDetails = dynamicCategories.map(cat => {
       const relevantDesignations = designations.filter(d => d.categoryId === cat.id);
-      let total = 0;
+      let catTotal = 0;
+      let cCount = 0;
+      let aCount = 0;
+      let fCount = 0;
+      
       relevantDesignations.forEach(d => {
-        if (d.centralId === ref.id) total += cat.centralFee;
-        if (d.assistant1Id === ref.id || d.assistant2Id === ref.id) total += cat.assistantFee;
-        if (d.fourthId === ref.id) total += cat.fourthFee;
+        if (d.centralId === ref.id) {
+          catTotal += cat.centralFee;
+          cCount++;
+        }
+        if (d.assistant1Id === ref.id || d.assistant2Id === ref.id) {
+          catTotal += cat.assistantFee;
+          aCount++;
+        }
+        if (d.fourthId === ref.id) {
+          catTotal += cat.fourthFee;
+          fCount++;
+        }
       });
-      return total;
+      
+      rowNetTotal += catTotal;
+      return { total: catTotal, c: cCount, a: aCount, f: fCount };
     });
-
-    const netToPay = earningsPerCategory.reduce((acc, val) => acc + val, 0);
 
     return [
       index + 1,
       ref.name.toUpperCase(),
-      ...earningsPerCategory.map(e => e > 0 ? e.toLocaleString() : ''),
-      netToPay.toLocaleString(),
-      ref.phone || ''
+      ...catDetails.map(d => d.total > 0 ? `${d.total}(${d.c},${d.a},${d.f})` : ''),
+      rowNetTotal.toLocaleString(),
+      ref.phone || '',
+      // Add hidden column for totals calculation if needed, but let's just calculate totals separately
+      catDetails // index 5 will hold the objects for total calculations
     ];
   });
 
-  const actualColumnTotals = dynamicCategories.map((cat) => {
+  const actualColumnTotals = dynamicCategories.map((cat, idx) => {
     return refereeEarnings.reduce((acc, row) => {
-      const colIndex = dynamicCategories.indexOf(cat) + 2;
-      const val = String(row[colIndex]).replace(/,/g, '');
-      return acc + (Number(val) || 0);
+      const details = row[row.length - 1] as any[];
+      return acc + (details[idx].total || 0);
     }, 0);
   });
 
   const grandTotal = refereeEarnings.reduce((acc, row) => {
-    const val = String(row[row.length - 2]).replace(/,/g, '');
-    return acc + (Number(val) || 0);
+    const details = row[row.length - 1] as any[];
+    return acc + details.reduce((sum: number, d: any) => sum + d.total, 0);
   }, 0);
 
   const footerRow = [
@@ -104,7 +119,7 @@ export const generateRefereeReport = (
   autoTable(doc, {
     startY: 50,
     head: head,
-    body: [...refereeEarnings, footerRow],
+    body: [...refereeEarnings.map(row => row.slice(0, -1)), footerRow],
     theme: 'grid',
     styles: {
       fontSize: 8,
