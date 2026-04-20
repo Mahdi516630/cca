@@ -18,11 +18,23 @@ const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "referee-manager-secret-key";
 
 // Initialize Neon Postgres
-const sql = neon(process.env.DATABASE_URL!);
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  console.error("CRITICAL: DATABASE_URL is missing in environment variables!");
+}
+const sql = neon(databaseUrl!);
 
 // Initialize Database Tables
 async function initDb() {
+  if (!databaseUrl) return;
+  
   try {
+    console.log("Connecting to database...");
+    
+    // Test simple query
+    await sql`SELECT 1`;
+    console.log("Database connection established.");
+
     await sql`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -61,11 +73,13 @@ async function initDb() {
         endtime TEXT,
         categoryid TEXT REFERENCES categories(id),
         centralid TEXT REFERENCES referees(id),
-        assistant1id TEXT,
-        assistant2id TEXT,
-        fourthid TEXT
+        assistant1id TEXT REFERENCES referees(id),
+        assistant2id TEXT REFERENCES referees(id),
+        fourthid TEXT REFERENCES referees(id)
       );
     `;
+    
+    console.log("Tables verified/created successfully.");
 
     // Seed Users
     const seedUsers = [
