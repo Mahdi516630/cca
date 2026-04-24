@@ -34,8 +34,7 @@ import {
   isAfter, 
   parseISO 
 } from 'date-fns';
-import { generateRefereeReport } from './lib/pdf-utils';
-import { generateRefereeExcelReport } from './lib/excel-utils';
+import { generateRefereeExcelReport, generateSingleCategoryExcelAudit, exportDesignationsToExcel, generateBulkDesignationsExcel, generateNetAPayerExcelReport } from './lib/excel-utils';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
@@ -44,12 +43,15 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [designations, setDesignations] = useState<Designation[]>([]);
   
+  // Selection state
+  const [selectedDesignationIds, setSelectedDesignationIds] = useState<string[]>([]);
+  
   // Auth form states
   const [isRegister, setIsRegister] = useState(false);
   const [authForm, setAuthForm] = useState({ email: '', password: '' });
 
   // Form states
-  const [newReferee, setNewReferee] = useState({ name: '', phone: '' });
+  const [newReferee, setNewReferee] = useState({ name: '', phone: '', grade: '' });
   const [editingReferee, setEditingReferee] = useState<Referee | null>(null);
   const [newCategory, setNewCategory] = useState({ name: '', centralFee: 0, assistantFee: 0, fourthFee: 0 });
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -59,6 +61,7 @@ export default function App() {
   });
   const [editingDesignation, setEditingDesignation] = useState<Designation | null>(null);
   const [timeFilter, setTimeFilter] = useState<'all' | 'week' | 'month' | 'quarter' | 'year'>('month');
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'today' | 'week' | 'month' | 'quarter' | 'year'>('all');
   const [refereeSearch, setRefereeSearch] = useState('');
   const [categorySearch, setCategorySearch] = useState('');
 
@@ -110,6 +113,8 @@ export default function App() {
       setReferees(refs);
       setCategories(cats);
       setDesignations(desigs);
+      // Clear selection when data is refreshed to avoid stale selection
+      setSelectedDesignationIds([]);
     } catch (error) {
       console.error('Fetch data error:', error);
     }
@@ -151,7 +156,7 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ ...newReferee, id, createdAt: new Date().toISOString() }),
       });
-      setNewReferee({ name: '', phone: '' });
+      setNewReferee({ name: '', phone: '', grade: '' });
       fetchData();
       toast.success('Arbitre ajouté');
     } catch (error: any) {
@@ -257,24 +262,57 @@ export default function App() {
     }
   };
 
-  const getFilteredDesignations = () => {
+  const getFilteredDesignations = (list: Designation[], filter: string) => {
     const now = new Date();
     let startDate: Date | null = null;
-    switch (timeFilter) {
-      case 'week': startDate = startOfWeek(now); break;
+    
+    // Helper to get start of today properly
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    switch (filter) {
+      case 'today': startDate = startOfToday; break;
+      case 'week': startDate = startOfWeek(now, { weekStartsOn: 1 }); break;
       case 'month': startDate = startOfMonth(now); break;
       case 'quarter': startDate = startOfQuarter(now); break;
       case 'year': startDate = startOfYear(now); break;
-      default: return designations;
+      default: return list;
     }
-    return designations.filter(d => {
+
+    return list.filter(d => {
       if (!d.date) return false;
       const dDate = parseISO(d.date);
+      if (filter === 'today') {
+        return dDate.getTime() === startOfToday.getTime();
+      }
       return isAfter(dDate, startDate!) || dDate.getTime() === startDate!.getTime();
     });
   };
 
-  const filteredDesignations = getFilteredDesignations();
+  const filteredDesignations = getFilteredDesignations(designations, timeFilter);
+  const historyDesignations = getFilteredDesignations(designations, historyFilter);
+
+  const toggleSelectAll = () => {
+    if (selectedDesignationIds.length === historyDesignations.length) {
+      setSelectedDesignationIds([]);
+    } else {
+      setSelectedDesignationIds(historyDesignations.map(d => d.id));
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedDesignationIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const exportSelected = () => {
+    const selected = designations.filter(d => selectedDesignationIds.includes(d.id));
+    if (selected.length === 0) {
+      toast.error('Aucun match sélectionné');
+      return;
+    }
+    generateBulkDesignationsExcel(selected, referees, categories);
+  };
 
   if (!token) {
     return (
@@ -385,6 +423,15 @@ export default function App() {
                         placeholder="Ex: 77865024"
                       />
                     </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="referee-grade">Grades</Label>
+                      <Input 
+                        id="referee-grade" 
+                        value={newReferee.grade || ''} 
+                        onChange={(e) => setNewReferee({...newReferee, grade: e.target.value})} 
+                        placeholder="Ex: Stagiaire 2024"
+                      />
+                    </div>
                     <Button type="submit" className="w-full gap-2">
                       <PlusCircle className="w-4 h-4" /> Ajouter
                     </Button>
@@ -410,6 +457,7 @@ export default function App() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Nom</TableHead>
+                          <TableHead>Grade</TableHead>
                           <TableHead>Téléphone</TableHead>
                           <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
@@ -420,6 +468,7 @@ export default function App() {
                           .map((ref) => (
                           <TableRow key={ref.id}>
                             <TableCell className="font-medium">{ref.name}</TableCell>
+                            <TableCell>{ref.grade || '-'}</TableCell>
                             <TableCell>{ref.phone || '-'}</TableCell>
                             <TableCell className="text-right space-x-2">
                               <Button variant="ghost" size="icon" onClick={() => setEditingReferee(ref)}>
@@ -633,6 +682,14 @@ export default function App() {
                     <Label>Heure Fin</Label>
                     <Input type="time" value={newDesignation.endTime} onChange={(e) => setNewDesignation({...newDesignation, endTime: e.target.value})} />
                   </div>
+                  <div className="space-y-2">
+                    <Label>Terrain</Label>
+                    <Input value={newDesignation.terrain || ""} onChange={(e) => setNewDesignation({...newDesignation, terrain: e.target.value})} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Assesseur</Label>
+                    <Input value={newDesignation.assessor || ""} onChange={(e) => setNewDesignation({...newDesignation, assessor: e.target.value})} />
+                  </div>
                   <div className="flex items-end">
                     <Button type="submit" className="w-full gap-2">
                       <PlusCircle className="w-4 h-4" /> Enregistrer
@@ -642,46 +699,99 @@ export default function App() {
               </CardContent>
             </Card>
 
-            <Card className="mt-6 border-none shadow-md">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0">
-                <CardTitle>Historique des Désignations</CardTitle>
-                <Badge variant="secondary" className="text-sm">
-                  {designations.length} Désignations au total
-                </Badge>
+            <Card className="mt-6 border-none shadow-md overflow-hidden">
+              <CardHeader className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <CardTitle>Historique des Désignations</CardTitle>
+                  <Badge variant="secondary" className="hidden sm:flex">
+                    {historyDesignations.length} Matchs
+                  </Badge>
+                </div>
+                
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg">
+                    <Filter className="w-3 h-3 ml-2 text-slate-500" />
+                    <Select value={historyFilter} onValueChange={(v: any) => setHistoryFilter(v)}>
+                      <SelectTrigger className="w-[140px] h-8 border-none bg-transparent shadow-none focus:ring-0 text-xs">
+                        <SelectValue placeholder="Trier par..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Tous les matchs</SelectItem>
+                        <SelectItem value="today">Aujourd'hui</SelectItem>
+                        <SelectItem value="week">Cette Semaine</SelectItem>
+                        <SelectItem value="month">Ce Mois</SelectItem>
+                        <SelectItem value="quarter">Ce Trimestre</SelectItem>
+                        <SelectItem value="year">Cette Année</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  
+                  {selectedDesignationIds.length > 0 && (
+                    <Button onClick={exportSelected} size="sm" className="gap-2 bg-green-600 hover:bg-green-700 h-8 text-xs">
+                      <Download className="w-3 h-3" />
+                      Exporter ({selectedDesignationIds.length})
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="p-0 sm:p-6">
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>N° Match</TableHead>
-                        <TableHead>Date</TableHead>
-                        <TableHead>Match</TableHead>
-                        <TableHead>Catégorie</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
+                        <TableHead className="w-12">
+                          <input 
+                            type="checkbox" 
+                            className="rounded border-slate-300"
+                            checked={selectedDesignationIds.length === historyDesignations.length && historyDesignations.length > 0}
+                            onChange={toggleSelectAll}
+                          />
+                        </TableHead>
+                        <TableHead className="text-xs sm:text-sm">Matc N°</TableHead>
+                        <TableHead className="text-xs sm:text-sm">Date</TableHead>
+                        <TableHead className="text-xs sm:text-sm">Affiche</TableHead>
+                        <TableHead className="text-xs sm:text-sm">Catégorie</TableHead>
+                        <TableHead className="text-right text-xs sm:text-sm">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {designations.map((d) => (
-                        <TableRow key={d.id}>
-                          <TableCell>{d.matchNumber}</TableCell>
-                          <TableCell>{d.date}</TableCell>
-                          <TableCell>{d.teamA} vs {d.teamB}</TableCell>
+                      {historyDesignations.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((d) => (
+                        <TableRow key={d.id} className={selectedDesignationIds.includes(d.id) ? "bg-primary/5" : ""}>
                           <TableCell>
-                            <Badge variant="outline">
+                             <input 
+                              type="checkbox" 
+                              className="rounded border-slate-300"
+                              checked={selectedDesignationIds.includes(d.id)}
+                              onChange={() => toggleSelect(d.id)}
+                            />
+                          </TableCell>
+                          <TableCell className="text-xs sm:text-sm font-medium">{d.matchNumber}</TableCell>
+                          <TableCell className="text-xs sm:text-sm whitespace-nowrap">{d.date}</TableCell>
+                          <TableCell className="text-xs sm:text-sm max-w-[150px] truncate">
+                            {d.teamA} <span className="text-muted-foreground mx-1">vs</span> {d.teamB}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="text-[10px] sm:text-xs whitespace-nowrap">
                               {categories.find(c => c.id === d.categoryId)?.name || 'N/A'}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-right space-x-2">
-                            <Button variant="ghost" size="icon" onClick={() => setEditingDesignation(d)}>
-                              <Pencil className="w-4 h-4 text-primary" />
+                          <TableCell className="text-right whitespace-nowrap">
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setEditingDesignation(d)}>
+                              <Pencil className="w-3 h-3 text-primary" />
                             </Button>
-                            <Button variant="ghost" size="icon" onClick={() => deleteItem('designations', d.id)}>
-                              <Trash2 className="w-4 h-4 text-destructive" />
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => deleteItem('designations', d.id)}>
+                              <Trash2 className="w-3 h-3 text-destructive" />
                             </Button>
                           </TableCell>
                         </TableRow>
                       ))}
+                      {historyDesignations.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
+                            Aucun match trouvé pour cette période
+                          </TableCell>
+                        </TableRow>
+                      )}
                     </TableBody>
                   </Table>
                 </div>
@@ -716,13 +826,17 @@ export default function App() {
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="flex flex-wrap gap-4">
-                  <Button onClick={() => generateRefereeReport(filteredDesignations, referees, categories)} className="gap-2">
-                    <FileText className="w-4 h-4" />
-                    Générer le Rapport PDF
-                  </Button>
-                  <Button onClick={() => generateRefereeExcelReport(filteredDesignations, referees, categories)} variant="outline" className="gap-2">
+                  <Button onClick={() => generateRefereeExcelReport(filteredDesignations, referees, categories)} variant="outline" className="gap-2 border-green-200 bg-green-50 text-green-700 hover:bg-green-100">
                     <FileText className="w-4 h-4 text-green-600" />
-                    Exporter en Excel
+                    Rapport Audit Mensuel
+                  </Button>
+                  <Button onClick={() => generateNetAPayerExcelReport(filteredDesignations, referees, categories)} variant="outline" className="gap-2 border-green-200 bg-green-50 text-green-700 hover:bg-green-100">
+                    <FileText className="w-4 h-4 text-green-600" />
+                    Rapport Net à Payer
+                  </Button>
+                  <Button onClick={() => exportDesignationsToExcel(filteredDesignations, referees, categories)} variant="outline" className="gap-2 border-green-200 bg-green-50 text-green-700 hover:bg-green-100">
+                    <Download className="w-4 h-4" />
+                    Désignations de la semaine
                   </Button>
                 </div>
 
@@ -763,7 +877,18 @@ export default function App() {
                       return (
                         <Card key={cat.id} className="border-slate-200 shadow-sm">
                           <CardHeader className="pb-2">
-                            <CardTitle className="text-base">{cat.name}</CardTitle>
+                            <CardTitle className="text-base flex items-center justify-between">
+                              {cat.name}
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                className="h-8 w-8 text-green-600"
+                                onClick={() => generateSingleCategoryExcelAudit(filteredDesignations, referees, cat)}
+                                title="Rapport audit du détail par catégorie"
+                              >
+                                <Download className="w-4 h-4" />
+                              </Button>
+                            </CardTitle>
                             <CardDescription>{catMatches.length} matchs</CardDescription>
                           </CardHeader>
                           <CardContent>
@@ -812,6 +937,13 @@ export default function App() {
                 <Input 
                   value={editingReferee?.phone || ''} 
                   onChange={(e) => editingReferee && setEditingReferee({...editingReferee, phone: e.target.value})} 
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Grades</Label>
+                <Input 
+                  value={editingReferee?.grade || ''} 
+                  onChange={(e) => editingReferee && setEditingReferee({...editingReferee, grade: e.target.value})} 
                 />
               </div>
               <DialogFooter>
@@ -953,6 +1085,22 @@ export default function App() {
                     {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Heure Début</Label>
+                <Input type="time" value={editingDesignation?.startTime || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, startTime: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Heure Fin</Label>
+                <Input type="time" value={editingDesignation?.endTime || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, endTime: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Terrain</Label>
+                <Input value={editingDesignation?.terrain || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, terrain: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Assesseur</Label>
+                <Input value={editingDesignation?.assessor || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, assessor: e.target.value})} />
               </div>
               <div className="col-span-full flex justify-end gap-2 mt-4">
                 <Button type="button" variant="outline" onClick={() => setEditingDesignation(null)}>Annuler</Button>

@@ -2,6 +2,7 @@ export interface Referee {
   id: string;
   name: string;
   phone?: string;
+  grade?: string;
   createdAt: string;
 }
 
@@ -26,4 +27,6 @@ export interface Designation {
   matchNumber: string;
   startTime: string;
   endTime: string;
+  terrain?: string;
+  assessor?: string;
 }

@@ -21,6 +21,13 @@ const JWT_SECRET = process.env.JWT_SECRET || "referee-manager-secret-key";
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   console.error("CRITICAL: DATABASE_URL is missing in environment variables!");
+} else {
+  try {
+    const url = new URL(databaseUrl);
+    console.log(`Configured to connect to host: ${url.host} (Database: ${url.pathname.slice(1)})`);
+  } catch (e) {
+    console.error("DATABASE_URL is not a valid URL format");
+  }
 }
 const sql = neon(databaseUrl!);
 
@@ -29,11 +36,11 @@ async function initDb() {
   if (!databaseUrl) return;
   
   try {
-    console.log("Connecting to database...");
+    console.log("Testing database connection...");
     
     // Test simple query
     await sql`SELECT 1`;
-    console.log("Database connection established.");
+    console.log("Database connection successful!");
 
     await sql`
       CREATE TABLE IF NOT EXISTS users (
@@ -48,6 +55,7 @@ async function initDb() {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         phone TEXT,
+        grade TEXT,
         createdAt TEXT
       );
     `;
@@ -71,6 +79,8 @@ async function initDb() {
         matchnumber TEXT,
         starttime TEXT,
         endtime TEXT,
+        terrain TEXT,
+        assessor TEXT,
         categoryid TEXT REFERENCES categories(id),
         centralid TEXT REFERENCES referees(id),
         assistant1id TEXT REFERENCES referees(id),
@@ -167,6 +177,7 @@ app.get("/api/referees", authenticateToken, async (req, res) => {
       id: r.id,
       name: r.name,
       phone: r.phone,
+      grade: r.grade,
       createdAt: r.createdAt || r.createdat
     }));
     res.json(mapped);
@@ -176,9 +187,9 @@ app.get("/api/referees", authenticateToken, async (req, res) => {
 });
 
 app.post("/api/referees", authenticateToken, async (req, res) => {
-  const { id, name, phone, createdAt } = req.body;
+  const { id, name, phone, grade, createdAt } = req.body;
   try {
-    await sql`INSERT INTO referees (id, name, phone, createdAt) VALUES (${id}, ${name}, ${phone}, ${createdAt})`;
+    await sql`INSERT INTO referees (id, name, phone, grade, createdAt) VALUES (${id}, ${name}, ${phone}, ${grade}, ${createdAt})`;
     res.status(201).json({ id });
   } catch (error) {
     res.status(500).json({ error: "Error creating referee" });
@@ -186,9 +197,9 @@ app.post("/api/referees", authenticateToken, async (req, res) => {
 });
 
 app.put("/api/referees/:id", authenticateToken, async (req, res) => {
-  const { name, phone } = req.body;
+  const { name, phone, grade } = req.body;
   try {
-    await sql`UPDATE referees SET name = ${name}, phone = ${phone} WHERE id = ${req.params.id}`;
+    await sql`UPDATE referees SET name = ${name}, phone = ${phone}, grade = ${grade} WHERE id = ${req.params.id}`;
     res.json({ message: "Updated" });
   } catch (error) {
     res.status(500).json({ error: "Error updating referee" });
@@ -267,6 +278,8 @@ app.get("/api/designations", authenticateToken, async (req, res) => {
       matchNumber: d.matchNumber || d.matchnumber,
       startTime: d.startTime || d.starttime,
       endTime: d.endTime || d.endtime,
+      terrain: d.terrain,
+      assessor: d.assessor,
       categoryId: d.categoryId || d.categoryid,
       centralId: d.centralId || d.centralid,
       assistant1Id: d.assistant1Id || d.assistant1id,
@@ -281,7 +294,7 @@ app.get("/api/designations", authenticateToken, async (req, res) => {
 
 app.put("/api/designations/:id", authenticateToken, async (req, res) => {
   const { 
-    date, teamA, teamB, matchNumber, startTime, endTime, 
+    date, teamA, teamB, matchNumber, startTime, endTime, terrain, assessor,
     categoryId, centralId, assistant1Id, assistant2Id, fourthId 
   } = req.body;
   
@@ -291,6 +304,7 @@ app.put("/api/designations/:id", authenticateToken, async (req, res) => {
       UPDATE designations 
       SET date = ${date || null}, teama = ${teamA || null}, teamb = ${teamB || null}, 
           matchnumber = ${matchNumber || null}, starttime = ${startTime || null}, endtime = ${endTime || null}, 
+          terrain = ${terrain || null}, assessor = ${assessor || null},
           categoryid = ${categoryId || null}, centralid = ${centralId || null}, 
           assistant1id = ${cleanId(assistant1Id)}, assistant2id = ${cleanId(assistant2Id)}, fourthid = ${cleanId(fourthId)}
       WHERE id = ${req.params.id}
@@ -303,7 +317,7 @@ app.put("/api/designations/:id", authenticateToken, async (req, res) => {
 
 app.post("/api/designations", authenticateToken, async (req, res) => {
   const { 
-    id, date, teamA, teamB, matchNumber, startTime, endTime, 
+    id, date, teamA, teamB, matchNumber, startTime, endTime, terrain, assessor,
     categoryId, centralId, assistant1Id, assistant2Id, fourthId 
   } = req.body;
   
@@ -312,7 +326,7 @@ app.post("/api/designations", authenticateToken, async (req, res) => {
 
     await sql`
       INSERT INTO designations (
-        id, date, teama, teamb, matchnumber, starttime, endtime, 
+        id, date, teama, teamb, matchnumber, starttime, endtime, terrain, assessor,
         categoryid, centralid, assistant1id, assistant2id, fourthid
       )
       VALUES (
@@ -323,6 +337,8 @@ app.post("/api/designations", authenticateToken, async (req, res) => {
         ${matchNumber || null}, 
         ${startTime || null}, 
         ${endTime || null}, 
+        ${terrain || null}, 
+        ${assessor || null}, 
         ${categoryId || null}, 
         ${centralId || null}, 
         ${cleanId(assistant1Id)}, 
