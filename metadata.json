@@ -1,5 +1,5 @@
 {
   "name": "Gestion des Arbitres",
-  "description": "Gestion des arbitres avec base de données SQLite locale, système d'authentification personnalisé et exports PDF/Excel.",
+  "description": "Système professionnel de gestion des désignations d'arbitres. Authentification sécurisée, base de données Postgres, exports Excel avancés et protection maximale des données.",
   "requestFramePermissions": []
 }

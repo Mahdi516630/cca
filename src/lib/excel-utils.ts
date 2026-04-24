@@ -183,7 +183,7 @@ export const generateRefereeExcelReport = async (
   const currentMonth = format(new Date(), 'MMMM yyyy', { locale: fr }).toUpperCase();
   worksheet.mergeCells(4, 1, 4, totalCols);
   const bannerCell = worksheet.getCell(4, 1);
-  bannerCell.value = `RAPPORT DETAILLE DES FRAIS - MOIS DE ${currentMonth}`;
+  bannerCell.value = `RAPPORT AUDIT MENSUEL - MOIS DE ${currentMonth}`;
   bannerCell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
   bannerCell.alignment = { horizontal: 'center' };
   bannerCell.fill = {
@@ -355,7 +355,7 @@ export const generateRefereeExcelReport = async (
   worksheet.getColumn(phoneCol).width = 15;
 
   const buffer = await workbook.xlsx.writeBuffer();
-  saveAs(new Blob([buffer]), `rapport-net-a-payer-${format(new Date(), 'yyyy-MM')}.xlsx`);
+  saveAs(new Blob([buffer]), `rapport-audit-mensuel-${format(new Date(), 'yyyy-MM')}.xlsx`);
 };
 
 export const generateSingleCategoryExcelAudit = async (
