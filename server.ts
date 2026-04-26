@@ -24,10 +24,11 @@ const authLimiter = rateLimit({
 });
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(helmet({
   contentSecurityPolicy: false, // Disable CSP as it might interfere with Vite injection
 }));
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "referee-manager-secret-key";
 
 // Initialize Neon Postgres
@@ -450,7 +451,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
