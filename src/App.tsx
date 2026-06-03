@@ -10,8 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import ClubCalendarShareModal from './components/ClubCalendarShareModal';
 import { 
   PlusCircle, 
+  Share2, 
   Trash2, 
   Pencil, 
   FileText, 
@@ -26,9 +28,16 @@ import {
   Menu,
   X,
   ChevronRight,
+  ChevronDown,
   Info,
   BookOpen,
-  Shield
+  Shield,
+  Trophy,
+  Clock,
+  MapPin,
+  CalendarDays,
+  Upload,
+  Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster } from '@/components/ui/sonner';
@@ -403,19 +412,59 @@ export default function App() {
   const [showSecurityClause, setShowSecurityClause] = useState(false);
 
   // Form states
-  const [newReferee, setNewReferee] = useState({ name: '', phone: '', grade: '' });
+  const [newReferee, setNewReferee] = useState<{name: string; phone: string; grade: string; allowedCategories: string[]}>({ name: '', phone: '', grade: '', allowedCategories: [] });
   const [editingReferee, setEditingReferee] = useState<Referee | null>(null);
-  const [newCategory, setNewCategory] = useState({ name: '', centralFee: 0, assistantFee: 0, fourthFee: 0 });
+  const [newCategory, setNewCategory] = useState<{name: string; centralFee: number; assistantFee: number; fourthFee: number; teams: string[]}>({ name: '', centralFee: 0, assistantFee: 0, fourthFee: 0, teams: [] });
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [newTeamsInput, setNewTeamsInput] = useState('');
+  const [editTeamsInput, setEditTeamsInput] = useState('');
   const [newDesignation, setNewDesignation] = useState<Partial<Designation>>({
     date: '', teamA: '', teamB: '', matchNumber: '', startTime: '', endTime: '',
-    categoryId: '', centralId: '', assistant1Id: '', assistant2Id: '', fourthId: ''
+    categoryId: '', centralId: '', assistant1Id: '', assistant2Id: '', fourthId: '',
+    mayorCommissioner: ''
   });
   const [editingDesignation, setEditingDesignation] = useState<Designation | null>(null);
   const [timeFilter, setTimeFilter] = useState<'all' | 'week' | 'month' | 'quarter' | 'year'>('month');
   const [historyFilter, setHistoryFilter] = useState<'all' | 'today' | 'week' | 'month' | 'quarter' | 'year'>('all');
+  const [historyCategoryFilter, setHistoryCategoryFilter] = useState<string>('all');
   const [refereeSearch, setRefereeSearch] = useState('');
   const [categorySearch, setCategorySearch] = useState('');
+  const [expandedCategories, setExpandedCategories] = useState<string[]>([]);
+  const [categoryToDeleteCalendar, setCategoryToDeleteCalendar] = useState<{ id: string, name: string } | null>(null);
+
+  // Match Sheet State
+  const [matchSheets, setMatchSheets] = useState<any[]>([]);
+  const [selectedMatchForSheet, setSelectedMatchForSheet] = useState<string>("");
+  const [sheetForm, setSheetForm] = useState({
+    categoryId: "",
+    matchNumber: "",
+    scoreA: 0,
+    scoreB: 0,
+    scorers: "",
+    cards: "",
+    observations: "",
+    scannedSheet: ""
+  });
+
+  // Automated Planning States
+  const [designationMethod, setDesignationMethod] = useState<'manual' | 'auto'>('manual');
+  const [showCalendarView, setShowCalendarView] = useState(false);
+  const [showClubShareModal, setShowClubShareModal] = useState(false);
+  const [planningConfig, setPlanningConfig] = useState({
+    categoryId: '',
+    type: 'simple' as 'simple' | 'aller-retour',
+    weekDays: [] as number[], // Sunday (0) to Saturday (6)
+    terrain: '',
+    matchesPerWeek: 2,
+    halfDuration: 45,
+    startDate: new Date().toISOString().split('T')[0],
+    startHour: '14:00'
+  });
+
+  const getEligibleReferees = (categoryId: string | undefined) => {
+    if (!categoryId) return referees;
+    return referees.filter(r => r.allowedCategories?.includes(categoryId));
+  };
 
   // API Helper
   const api = async (path: string, options: any = {}) => {
@@ -469,14 +518,16 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [refs, cats, desigs] = await Promise.all([
+      const [refs, cats, desigs, sheets] = await Promise.all([
         api('/api/referees'),
         api('/api/categories'),
-        api('/api/designations')
+        api('/api/designations'),
+        api('/api/match_sheets').catch(() => [])
       ]);
       setReferees(refs);
       setCategories(cats);
       setDesignations(desigs);
+      setMatchSheets(sheets);
       
       if (user?.role === 'admin') {
         try {
@@ -575,7 +626,7 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ ...newReferee, id, createdAt: new Date().toISOString() }),
       });
-      setNewReferee({ name: '', phone: '', grade: '' });
+      setNewReferee({ name: '', phone: '', grade: '', allowedCategories: [] });
       fetchData();
       toast.success('Arbitre ajouté');
     } catch (error: any) {
@@ -592,7 +643,8 @@ export default function App() {
         body: JSON.stringify({ 
           name: editingReferee.name, 
           phone: editingReferee.phone || '',
-          grade: editingReferee.grade || ''
+          grade: editingReferee.grade || '',
+          allowedCategories: editingReferee.allowedCategories || []
         }),
       });
       setEditingReferee(null);
@@ -619,9 +671,119 @@ export default function App() {
     }
   };
 
+  const checkRefereeGapViolation = (
+    refereeId: string,
+    teamName: string,
+    matchDate: string,
+    matchId: string,
+    categoryId: string
+  ): { violated: boolean; message: string } => {
+    if (!refereeId || refereeId === 'none') return { violated: false, message: '' };
+
+    // Get all matches in this category, including the hypothetical/modified state of this match
+    const catMatches = designations
+      .filter(d => d.categoryId === categoryId && d.id !== matchId);
+    
+    // Create a temporary list adding our match
+    const tempMatch = { id: matchId, date: matchDate, centralId: '', assistant1Id: '', assistant2Id: '', fourthId: '', teamA: teamName, teamB: '' };
+    const allMatches = [...catMatches, tempMatch]
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // Find our index
+    const myIndex = allMatches.findIndex(m => m.id === matchId);
+
+    // Look backward
+    let lastRefIndex = -1;
+    for (let i = myIndex - 1; i >= 0; i--) {
+      const m = allMatches[i];
+      const isRef = m.centralId === refereeId || 
+                    m.assistant1Id === refereeId || 
+                    m.assistant2Id === refereeId || 
+                    m.fourthId === refereeId;
+      const possessesTeam = m.teamA === teamName || m.teamB === teamName;
+      if (isRef && possessesTeam) {
+        lastRefIndex = i;
+        break;
+      }
+    }
+
+    if (lastRefIndex !== -1) {
+      const gap = myIndex - lastRefIndex - 1;
+      if (gap < 2) {
+        const prevMatch = allMatches[lastRefIndex];
+        return { 
+          violated: true, 
+          message: `L'arbitre a déjà arbitré l'équipe ${teamName} lors du match N° ${prevMatch.matchNumber || '-'} (${prevMatch.date}). Il n'y a que ${gap} match(s) d'écart (minimum 2 requis).`
+        };
+      }
+    }
+
+    // Look forward
+    let nextRefIndex = -1;
+    for (let i = myIndex + 1; i < allMatches.length; i++) {
+      const m = allMatches[i];
+      const isRef = m.centralId === refereeId || 
+                    m.assistant1Id === refereeId || 
+                    m.assistant2Id === refereeId || 
+                    m.fourthId === refereeId;
+      const possessesTeam = m.teamA === teamName || m.teamB === teamName;
+      if (isRef && possessesTeam) {
+        nextRefIndex = i;
+        break;
+      }
+    }
+
+    if (nextRefIndex !== -1) {
+      const gap = nextRefIndex - myIndex - 1;
+      if (gap < 2) {
+        const nextMatch = allMatches[nextRefIndex];
+        return { 
+          violated: true, 
+          message: `L'arbitre est déjà planifié pour arbitrer l'équipe ${teamName} lors du match futur N° ${nextMatch.matchNumber || '-'} (${nextMatch.date}). Il n'y a que ${gap} match(s) d'écart (minimum 2 requis).`
+        };
+      }
+    }
+
+    return { violated: false, message: '' };
+  };
+
   const handleUpdateDesignation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingDesignation || !editingDesignation.categoryId || !editingDesignation.centralId) return;
+
+    // Validate referee gap rules for the four roles
+    const rolesToCheck = [
+      { id: editingDesignation.centralId, label: 'Central' },
+      { id: editingDesignation.assistant1Id, label: 'Assistant 1' },
+      { id: editingDesignation.assistant2Id, label: 'Assistant 2' },
+      { id: editingDesignation.fourthId, label: '4ème Arbitre' }
+    ];
+
+    for (const role of rolesToCheck) {
+      if (role.id && role.id !== 'none') {
+        const refObj = referees.find(r => r.id === role.id);
+        const refName = refObj ? refObj.name : 'Arbitre';
+        
+        // Check Team A
+        if (editingDesignation.teamA) {
+          const checkA = checkRefereeGapViolation(role.id, editingDesignation.teamA, editingDesignation.date || '', editingDesignation.id, editingDesignation.categoryId);
+          if (checkA.violated) {
+            toast.error(`Règles d'espacement de matches violées pour ${refName} (${role.label}) avec l'équipe ${editingDesignation.teamA}.\n${checkA.message}`);
+            return;
+          }
+        }
+
+        // Check Team B
+        if (editingDesignation.teamB) {
+          const checkB = checkRefereeGapViolation(role.id, editingDesignation.teamB, editingDesignation.date || '', editingDesignation.id, editingDesignation.categoryId);
+          if (checkB.violated) {
+            toast.error(`Règles d'espacement de matches violées pour ${refName} (${role.label}) avec l'équipe ${editingDesignation.teamB}.\n${checkB.message}`);
+            return;
+          }
+        }
+      }
+    }
+
     try {
       await api(`/api/designations/${editingDesignation.id}`, {
         method: 'PUT',
@@ -644,7 +806,8 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ ...newCategory, id }),
       });
-      setNewCategory({ name: '', centralFee: 0, assistantFee: 0, fourthFee: 0 });
+      setNewCategory({ name: '', centralFee: 0, assistantFee: 0, fourthFee: 0, teams: [] });
+      setNewTeamsInput('');
       fetchData();
       toast.success('Catégorie créée');
     } catch (error: any) {
@@ -658,7 +821,42 @@ export default function App() {
       toast.error('Veuillez sélectionner au moins une catégorie et un arbitre central');
       return;
     }
+
     const id = Math.random().toString(36).substr(2, 9);
+
+    // Validate referee gap rules for the four roles before manual creation
+    const rolesToCheck = [
+      { id: newDesignation.centralId, label: 'Central' },
+      { id: newDesignation.assistant1Id, label: 'Assistant 1' },
+      { id: newDesignation.assistant2Id, label: 'Assistant 2' },
+      { id: newDesignation.fourthId, label: '4ème Arbitre' }
+    ];
+
+    for (const role of rolesToCheck) {
+      if (role.id && role.id !== 'none') {
+        const refObj = referees.find(r => r.id === role.id);
+        const refName = refObj ? refObj.name : 'Arbitre';
+        
+        // Check Team A
+        if (newDesignation.teamA) {
+          const checkA = checkRefereeGapViolation(role.id, newDesignation.teamA, newDesignation.date || '', id, newDesignation.categoryId);
+          if (checkA.violated) {
+            toast.error(`Règles d'espacement de matches violées pour ${refName} (${role.label}) avec l'équipe ${newDesignation.teamA}.\n${checkA.message}`);
+            return;
+          }
+        }
+
+        // Check Team B
+        if (newDesignation.teamB) {
+          const checkB = checkRefereeGapViolation(role.id, newDesignation.teamB, newDesignation.date || '', id, newDesignation.categoryId);
+          if (checkB.violated) {
+            toast.error(`Règles d'espacement de matches violées pour ${refName} (${role.label}) avec l'équipe ${newDesignation.teamB}.\n${checkB.message}`);
+            return;
+          }
+        }
+      }
+    }
+
     try {
       await api('/api/designations', {
         method: 'POST',
@@ -666,7 +864,8 @@ export default function App() {
       });
       setNewDesignation({ 
         date: '', teamA: '', teamB: '', matchNumber: '', startTime: '', endTime: '',
-        categoryId: '', centralId: '', assistant1Id: '', assistant2Id: '', fourthId: ''
+        categoryId: '', centralId: '', assistant1Id: '', assistant2Id: '', fourthId: '',
+        mayorCommissioner: ''
       });
       fetchData();
       toast.success('Désignation enregistrée');
@@ -675,11 +874,380 @@ export default function App() {
     }
   };
 
+  const handleSelectMatchForSaisie = (matchId: string) => {
+    setSelectedMatchForSheet(matchId);
+    if (!matchId || matchId === "custom") {
+      setSheetForm({
+        categoryId: "",
+        matchNumber: "",
+        scoreA: 0,
+        scoreB: 0,
+        scorers: "",
+        cards: "",
+        observations: "",
+        scannedSheet: ""
+      });
+      return;
+    }
+
+    const match = designations.find(d => d.id === matchId);
+    if (match) {
+      // Find if we already have a match sheet saved
+      const existingSheet = matchSheets.find(s => s.categoryId === match.categoryId && s.matchNumber === match.matchNumber);
+      if (existingSheet) {
+        setSheetForm({
+          categoryId: match.categoryId,
+          matchNumber: match.matchNumber || "",
+          scoreA: existingSheet.scoreA || 0,
+          scoreB: existingSheet.scoreB || 0,
+          scorers: existingSheet.scorers || "",
+          cards: existingSheet.cards || "",
+          observations: existingSheet.observations || "",
+          scannedSheet: existingSheet.scannedSheet || ""
+        });
+      } else {
+        setSheetForm({
+          categoryId: match.categoryId,
+          matchNumber: match.matchNumber || "",
+          scoreA: 0,
+          scoreB: 0,
+          scorers: "",
+          cards: "",
+          observations: "",
+          scannedSheet: ""
+        });
+      }
+    }
+  };
+
+  const handleSaveMatchSheet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sheetForm.categoryId || !sheetForm.matchNumber) {
+      toast.error("Veuillez choisir une catégorie et un numéro de match");
+      return;
+    }
+    const id = Math.random().toString(36).substr(2, 9);
+    try {
+      await api('/api/match_sheets', {
+        method: 'POST',
+        body: JSON.stringify({ ...sheetForm, id }),
+      });
+      toast.success("Feuille de match enregistrée avec succès");
+      fetchData();
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  const generateRoundRobinMatches = (teams: string[], type: 'simple' | 'aller-retour') => {
+    let list = [...teams];
+    if (list.length < 2) return [];
+    
+    const hasDummy = list.length % 2 !== 0;
+    if (hasDummy) {
+      list.push("BYE_DUMMY_TEAM");
+    }
+    
+    const numTeams = list.length;
+    const numRounds = numTeams - 1;
+    const matchesPerRound = numTeams / 2;
+    
+    let rounds: { teamA: string; teamB: string }[][] = [];
+    
+    for (let r = 0; r < numRounds; r++) {
+      let roundMatches: { teamA: string; teamB: string }[] = [];
+      for (let m = 0; m < matchesPerRound; m++) {
+        const home = (r + m) % (numTeams - 1);
+        const away = (numTeams - 1 - m + r) % (numTeams - 1);
+        
+        const teamHome = m === 0 ? list[numTeams - 1] : list[home];
+        const teamAway = list[away];
+        
+        if (teamHome !== "BYE_DUMMY_TEAM" && teamAway !== "BYE_DUMMY_TEAM") {
+          if (r % 2 === 0) {
+            roundMatches.push({ teamA: teamHome, teamB: teamAway });
+          } else {
+            roundMatches.push({ teamA: teamAway, teamB: teamHome });
+          }
+        }
+      }
+      rounds.push(roundMatches);
+    }
+    
+    let finalMatches: { teamA: string; teamB: string }[] = [];
+    
+    // Simple Aller
+    rounds.forEach((roundMatches) => {
+      finalMatches.push(...roundMatches);
+    });
+    
+    // Aller-Retour
+    if (type === 'aller-retour') {
+      rounds.forEach((roundMatches) => {
+        roundMatches.forEach((m) => {
+          finalMatches.push({ teamA: m.teamB, teamB: m.teamA });
+        });
+      });
+    }
+    
+    return finalMatches;
+  };
+
+  const handleGeneratePlanning = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { categoryId, type, weekDays, terrain, matchesPerWeek, halfDuration, startDate, startHour } = planningConfig;
+    
+    if (!categoryId) {
+      toast.error('Veuillez sélectionner une catégorie');
+      return;
+    }
+    if (weekDays.length === 0) {
+      toast.error('Veuillez sélectionner au moins un jour de la semaine disponible');
+      return;
+    }
+    if (!terrain.trim()) {
+      toast.error('Veuillez renseigner le nom du terrain');
+      return;
+    }
+    if (!matchesPerWeek || matchesPerWeek < 1) {
+      toast.error('Nombre de matchs par semaine invalide');
+      return;
+    }
+    
+    const cat = categories.find(c => c.id === categoryId);
+    if (!cat || !cat.teams || cat.teams.length < 2) {
+      toast.error("Cette catégorie n'a pas assez d'équipes pour générer un calendrier (minimum 2).");
+      return;
+    }
+    
+    const matches = generateRoundRobinMatches(cat.teams, type);
+    if (matches.length === 0) {
+      toast.error('Impossible de générer les oppositions.');
+      return;
+    }
+    
+    const slotDurationMinutes = halfDuration * 2 + 15; // 2 mi-temps + 15 min de pause
+    
+    let currentDate = new Date(startDate);
+    currentDate.setHours(0, 0, 0, 0);
+    
+    let matchIndex = 0;
+    let weekOffset = 0;
+    
+    const generated: any[] = [];
+    const eligibleReferees = referees.filter(r => r.allowedCategories?.includes(categoryId));
+    
+    while (matchIndex < matches.length) {
+      let weekStartDate = new Date(currentDate);
+      weekStartDate.setDate(weekStartDate.getDate() + weekOffset * 7);
+      
+      let weekDaysWithDates: { dayIndex: number; date: Date }[] = [];
+      for (let d = 0; d < 7; d++) {
+        let dDate = new Date(weekStartDate);
+        dDate.setDate(dDate.getDate() + d);
+        const dayIndex = dDate.getDay();
+        if (weekDays.includes(dayIndex)) {
+          weekDaysWithDates.push({ dayIndex, date: dDate });
+        }
+      }
+      
+      weekDaysWithDates.sort((a, b) => a.date.getTime() - b.date.getTime());
+      
+      if (weekDaysWithDates.length === 0) {
+        weekOffset++;
+        // prevent infinite loop if somehow no match can be scheduled
+        if (weekOffset > 100) break;
+        continue;
+      }
+      
+      let matchesThisWeekCount = Math.min(matchesPerWeek, matches.length - matchIndex);
+      let distributedSlots = weekDaysWithDates.map(wd => ({
+        date: wd.date,
+        count: 0
+      }));
+      
+      let mAssigned = 0;
+      let slotIdx = 0;
+      while (mAssigned < matchesThisWeekCount && distributedSlots.length > 0) {
+        distributedSlots[slotIdx % distributedSlots.length].count++;
+        mAssigned++;
+        slotIdx++;
+      }
+      
+      for (let ds of distributedSlots) {
+        if (ds.count === 0) continue;
+        
+        const [startH, startM] = startHour.split(":").map(Number);
+        let dayCurrentTime = new Date(ds.date);
+        dayCurrentTime.setHours(startH || 14, startM || 0, 0, 0);
+        
+        for (let c = 0; c < ds.count; c++) {
+          if (matchIndex >= matches.length) break;
+          
+          const m = matches[matchIndex];
+          
+          const shStr = String(dayCurrentTime.getHours()).padStart(2, '0') + ":" + String(dayCurrentTime.getMinutes()).padStart(2, '0');
+          
+          let endTime = new Date(dayCurrentTime);
+          endTime.setMinutes(endTime.getMinutes() + slotDurationMinutes);
+          const ehStr = String(endTime.getHours()).padStart(2, '0') + ":" + String(endTime.getMinutes()).padStart(2, '0');
+          
+          const dateStr = dayCurrentTime.toISOString().split('T')[0];
+          
+          // Assign referees for this match honoring the strict 2-match gap rule (where they haven't refereed either team recently)
+          const getRefereeGap = (refId: string, teamName: string, currentIndex: number, generatedSoFar: any[]): number => {
+            let lastIdx = -1;
+            for (let i = currentIndex - 1; i >= 0; i--) {
+              const prevMatchObj = generatedSoFar[i];
+              const isRefInMatch = prevMatchObj.centralId === refId ||
+                                   prevMatchObj.assistant1Id === refId ||
+                                   prevMatchObj.assistant2Id === refId ||
+                                   prevMatchObj.fourthId === refId;
+              const hasTeam = prevMatchObj.teamA === teamName || prevMatchObj.teamB === teamName;
+              if (isRefInMatch && hasTeam) {
+                lastIdx = i;
+                break;
+              }
+            }
+            if (lastIdx === -1) return 999;
+            return currentIndex - lastIdx - 1;
+          };
+
+          const getRefereeAssignmentCount = (refId: string, generatedSoFar: any[]): number => {
+            let count = 0;
+            for (const prevMatchObj of generatedSoFar) {
+              if (prevMatchObj.centralId === refId) count++;
+              if (prevMatchObj.assistant1Id === refId && prevMatchObj.assistant1Id !== 'none') count++;
+              if (prevMatchObj.assistant2Id === refId && prevMatchObj.assistant2Id !== 'none') count++;
+              if (prevMatchObj.fourthId === refId && prevMatchObj.fourthId !== 'none') count++;
+            }
+            return count;
+          };
+
+          const selectRoles = () => {
+            const roles = ['central', 'assistant1', 'assistant2', 'fourth'];
+            const assignments: Record<string, string> = {
+              central: '',
+              assistant1: 'none',
+              assistant2: 'none',
+              fourth: 'none'
+            };
+
+            const selectedIds = new Set<string>();
+
+            // Pre-score each referee for this match
+            const scoredRefs = eligibleReferees.map((ref) => {
+              const gapA = getRefereeGap(ref.id, m.teamA, matchIndex, generated);
+              const gapB = getRefereeGap(ref.id, m.teamB, matchIndex, generated);
+              const minGap = Math.min(gapA, gapB);
+              const isPerfect = minGap >= 2;
+              const totalAssignments = getRefereeAssignmentCount(ref.id, generated);
+              
+              return {
+                ref,
+                minGap,
+                isPerfect,
+                totalAssignments
+              };
+            });
+
+            for (const role of roles) {
+              const candidates = scoredRefs.filter(c => !selectedIds.has(c.ref.id));
+              if (candidates.length === 0) {
+                if (role === 'central') {
+                  assignments[role] = '';
+                } else {
+                  assignments[role] = 'none';
+                }
+                continue;
+              }
+
+              // Sort rules:
+              // 1. isPerfect (true satisfies the minimum 2 matches gap rule)
+              // 2. larger minGap
+              // 3. fewer total assignments so far in planning (load balancing)
+              candidates.sort((x, y) => {
+                if (x.isPerfect !== y.isPerfect) {
+                  return x.isPerfect ? -1 : 1;
+                }
+                if (x.minGap !== y.minGap) {
+                  return y.minGap - x.minGap;
+                }
+                return x.totalAssignments - y.totalAssignments;
+              });
+
+              const best = candidates[0];
+              assignments[role] = best.ref.id;
+              selectedIds.add(best.ref.id);
+            }
+
+            return assignments;
+          };
+
+          const assignments = selectRoles();
+          const centralId = assignments.central;
+          const assistant1Id = assignments.assistant1;
+          const assistant2Id = assignments.assistant2;
+          const fourthId = assignments.fourth;
+          
+          generated.push({
+            id: Math.random().toString(36).substr(2, 9),
+            categoryId,
+            centralId,
+            assistant1Id,
+            assistant2Id,
+            fourthId,
+            date: dateStr,
+            teamA: m.teamA,
+            teamB: m.teamB,
+            matchNumber: `${cat.name}_M${matchIndex + 1}`,
+            startTime: shStr,
+            endTime: ehStr,
+            terrain,
+            assessor: ""
+          });
+          
+          matchIndex++;
+          dayCurrentTime = new Date(endTime);
+          dayCurrentTime.setMinutes(dayCurrentTime.getMinutes() + 15); // petite pause
+        }
+      }
+      weekOffset++;
+    }
+    
+    try {
+      const toastId = toast.loading("Génération du planning et enregistrement...");
+      for (const d of generated) {
+        await api('/api/designations', {
+          method: 'POST',
+          body: JSON.stringify(d)
+        });
+      }
+      fetchData();
+      toast.dismiss(toastId);
+      toast.success(`${generated.length} matchs planifiés avec succès pour le championnat ${cat.name} !`);
+    } catch (err: any) {
+      toast.dismiss();
+      toast.error("Erreur d'enregistrement: " + err.message);
+    }
+  };
+
   const deleteItem = async (collectionName: string, id: string) => {
     try {
       await api(`/api/${collectionName}/${id}`, { method: 'DELETE' });
       fetchData();
       toast.success('Supprimé');
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
+  const deleteCategoryCalendar = async (categoryId: string) => {
+    try {
+      await api(`/api/designations/category/${categoryId}`, { method: 'DELETE' });
+      fetchData();
+      toast.success('Le calendrier de cette catégorie a été supprimé avec succès.');
+      setCategoryToDeleteCalendar(null);
     } catch (error: any) {
       toast.error(error.message);
     }
@@ -712,7 +1280,9 @@ export default function App() {
   };
 
   const filteredDesignations = getFilteredDesignations(designations, timeFilter);
-  const historyDesignations = getFilteredDesignations(designations, historyFilter);
+  const historyDesignations = getFilteredDesignations(designations, historyFilter).filter(d => 
+    historyCategoryFilter === 'all' || d.categoryId === historyCategoryFilter
+  );
 
   const toggleSelectAll = () => {
     if (selectedDesignationIds.length === historyDesignations.length) {
@@ -1049,6 +1619,7 @@ export default function App() {
                   <TabsTrigger value="referees" className="gap-2 rounded-xl transition-all data-[state=active]:bg-primary/10 data-[state=active]:text-primary font-bold"><Users className="w-4 h-4" /> Arbitres</TabsTrigger>
                   <TabsTrigger value="categories" className="gap-2 rounded-xl transition-all data-[state=active]:bg-primary/10 data-[state=active]:text-primary font-bold"><Layers className="w-4 h-4" /> Catégories</TabsTrigger>
                   <TabsTrigger value="designations" className="gap-2 rounded-xl transition-all data-[state=active]:bg-primary/10 data-[state=active]:text-primary font-bold"><Calendar className="w-4 h-4" /> Désignations</TabsTrigger>
+                  <TabsTrigger value="matches" className="gap-2 rounded-xl transition-all data-[state=active]:bg-primary/10 data-[state=active]:text-primary font-bold"><Trophy className="w-4 h-4" /> Manager/Match</TabsTrigger>
                   <TabsTrigger value="reports" className="gap-2 rounded-xl transition-all data-[state=active]:bg-primary/10 data-[state=active]:text-primary font-bold"><FileText className="w-4 h-4" /> Rapports</TabsTrigger>
                   {user?.role === 'admin' && (
                     <TabsTrigger value="roles" className="gap-2 rounded-xl transition-all data-[state=active]:bg-primary/10 data-[state=active]:text-primary font-bold"><Users className="w-4 h-4" /> Utilisateurs</TabsTrigger>
@@ -1092,6 +1663,33 @@ export default function App() {
                           placeholder="Ex: Stagiaire 2024"
                         />
                       </div>
+                      <div className="space-y-2">
+                        <Label>Catégories Autorisées (allowed)</Label>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {categories.map((cat) => {
+                            const isChecked = newReferee.allowedCategories?.includes(cat.id);
+                            return (
+                              <label key={cat.id} className="flex items-center gap-2 bg-slate-50 border hover:bg-slate-100 rounded-lg p-2 cursor-pointer select-none transition-all">
+                                <input 
+                                  type="checkbox"
+                                  className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary accent-primary cursor-pointer"
+                                  checked={isChecked || false}
+                                  onChange={(e) => {
+                                    const updated = e.target.checked 
+                                      ? [...(newReferee.allowedCategories || []), cat.id]
+                                      : (newReferee.allowedCategories || []).filter(id => id !== cat.id);
+                                    setNewReferee({...newReferee, allowedCategories: updated});
+                                  }}
+                                />
+                                <span className="text-xs font-semibold text-slate-700">{cat.name}</span>
+                              </label>
+                            );
+                          })}
+                          {categories.length === 0 && (
+                            <p className="text-xs text-slate-500 italic">Aucune catégorie créée</p>
+                          )}
+                        </div>
+                      </div>
                       <Button type="submit" className="w-full gap-2">
                         <PlusCircle className="w-4 h-4" /> Ajouter
                       </Button>
@@ -1120,6 +1718,7 @@ export default function App() {
                           <TableHead>Nom</TableHead>
                           <TableHead>Grade</TableHead>
                           <TableHead>Téléphone</TableHead>
+                          <TableHead>Catégories Autorisées</TableHead>
                           <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -1131,6 +1730,22 @@ export default function App() {
                             <TableCell className="font-medium">{ref.name}</TableCell>
                             <TableCell>{ref.grade || '-'}</TableCell>
                             <TableCell>{ref.phone || '-'}</TableCell>
+                            <TableCell>
+                              <div className="flex flex-wrap gap-1 max-w-[200px]">
+                                {ref.allowedCategories && ref.allowedCategories.length > 0 ? (
+                                  ref.allowedCategories.map((catId) => {
+                                    const cat = categories.find(c => c.id === catId);
+                                    return cat ? (
+                                      <Badge key={catId} variant="secondary" className="text-[10px] px-1.5 py-0.5 font-bold bg-primary/10 text-primary border-none">
+                                        {cat.name}
+                                      </Badge>
+                                    ) : null;
+                                  })
+                                ) : (
+                                  <span className="text-[10px] text-slate-400 italic font-semibold">Aucune</span>
+                                )}
+                              </div>
+                            </TableCell>
                             <TableCell className="text-right space-x-2">
                               {(user?.role === 'admin' || user?.role === 'manager') && (
                                 <>
@@ -1196,6 +1811,70 @@ export default function App() {
                           onChange={(e) => setNewCategory({...newCategory, fourthFee: Number(e.target.value)})} 
                         />
                       </div>
+                      
+                      <div className="space-y-2 border-t pt-4">
+                        <Label className="text-sm font-semibold">Saisie des Équipes</Label>
+                        <div className="flex gap-2">
+                          <Input 
+                            value={newTeamsInput} 
+                            onChange={(e) => setNewTeamsInput(e.target.value)} 
+                            placeholder="Nom de l'équipe (ex: PSG)"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (newTeamsInput.trim()) {
+                                  if (!newCategory.teams?.includes(newTeamsInput.trim())) {
+                                    setNewCategory({
+                                      ...newCategory,
+                                      teams: [...(newCategory.teams || []), newTeamsInput.trim()]
+                                    });
+                                  }
+                                  setNewTeamsInput('');
+                                }
+                              }
+                            }}
+                          />
+                          <Button 
+                            type="button" 
+                            variant="secondary"
+                            onClick={() => {
+                              if (newTeamsInput.trim()) {
+                                if (!newCategory.teams?.includes(newTeamsInput.trim())) {
+                                  setNewCategory({
+                                    ...newCategory,
+                                    teams: [...(newCategory.teams || []), newTeamsInput.trim()]
+                                  });
+                                }
+                                setNewTeamsInput('');
+                              }
+                            }}
+                          >
+                            Ajouter
+                          </Button>
+                        </div>
+                        
+                        {newCategory.teams && newCategory.teams.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border rounded-lg max-h-32 overflow-y-auto">
+                            {newCategory.teams.map((team, idx) => (
+                              <Badge key={idx} variant="secondary" className="flex items-center gap-1 text-[11px] font-medium bg-slate-200 text-slate-800 pr-1 hover:bg-slate-300">
+                                {team}
+                                <span 
+                                  onClick={() => {
+                                    setNewCategory({
+                                      ...newCategory,
+                                      teams: newCategory.teams.filter(t => t !== team)
+                                    });
+                                  }}
+                                  className="hover:bg-slate-400 p-0.5 rounded cursor-pointer leading-none text-[8px]"
+                                >
+                                  ✕
+                                </span>
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
                       <Button type="submit" className="w-full gap-2">
                         <PlusCircle className="w-4 h-4" /> Créer
                       </Button>
@@ -1257,114 +1936,216 @@ export default function App() {
                 </CardContent>
               </Card>
             </div>
+
+            {/* Liste d'affichage des équipes par catégorie */}
+            <Card className="border-none shadow-md mt-6">
+              <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b bg-slate-50/50 pb-4">
+                <div>
+                  <CardTitle className="text-lg font-bold text-slate-800">Liste des Équipes par Catégorie</CardTitle>
+                  <CardDescription className="text-xs text-slate-400">Visualisation des clubs engagés pour chaque niveau de compétition</CardDescription>
+                </div>
+                <Badge variant="outline" className="font-bold bg-white text-slate-700 self-start sm:self-center border-slate-200 shadow-sm">
+                  Total : {categories.reduce((acc, cat) => acc + (cat.teams?.length || 0), 0)} équipes
+                </Badge>
+              </CardHeader>
+              <CardContent className="pt-6">
+                {categories.length === 0 ? (
+                  <div className="text-center py-8 text-slate-400 italic">
+                    Aucune catégorie disponible. Créez-en une pour commencer à saisir des équipes.
+                  </div>
+                ) : (
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    {categories.map((cat) => {
+                      const teamCount = cat.teams?.length || 0;
+                      return (
+                        <div key={cat.id} className="flex flex-col rounded-xl border border-slate-200/80 bg-white text-card-foreground shadow-sm overflow-hidden hover:shadow-md transition-shadow">
+                          <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
+                            <h3 className="font-bold text-slate-700 text-xs flex items-center gap-2">
+                              <Trophy className="w-4 h-4 text-amber-500 shrink-0" />
+                              <span className="truncate max-w-[120px]">{cat.name}</span>
+                            </h3>
+                            <Badge variant="secondary" className="bg-primary/10 text-primary text-[10px] font-bold border-none px-2 py-0.5 shrink-0">
+                              {teamCount} {teamCount > 1 ? 'équipes' : 'équipe'}
+                            </Badge>
+                          </div>
+                          <div className="p-4 flex-1 flex flex-col justify-between">
+                            {!cat.teams || cat.teams.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 italic text-center py-6">Aucune équipe renseignée</p>
+                            ) : (
+                              <ul className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1">
+                                {cat.teams.map((team, idx) => (
+                                  <li key={idx} className="flex items-center gap-2 text-xs py-1.5 px-2.5 bg-slate-50/50 rounded-lg border border-slate-100 hover:bg-slate-50 transition-colors text-slate-700 font-semibold shadow-sm">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                                    <span className="truncate">{team}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="designations" className="space-y-6">
             {(user?.role === 'admin' || user?.role === 'manager') && (
-              <Card className="border-none shadow-md">
-                <CardHeader>
-                  <CardTitle>Nouvelle Désignation</CardTitle>
+              <Card className="border-none shadow-md overflow-hidden bg-white">
+                <CardHeader className="border-b bg-slate-50/50 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                      <Trophy className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-lg font-bold text-slate-800">Génération Automatique de Matches d'un Championnat</CardTitle>
+                      <CardDescription className="text-xs text-slate-500">Générez un calendrier complet (Aller simple ou Aller-Retour) pour les équipes engagées</CardDescription>
+                    </div>
+                  </div>
                 </CardHeader>
-                <CardContent>
-                  <form onSubmit={addDesignation} className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                    <div className="space-y-2">
-                      <Label>Catégorie</Label>
-                      <Select 
-                        value={newDesignation.categoryId || ""} 
-                        onValueChange={(v) => setNewDesignation({...newDesignation, categoryId: v})}
-                      >
-                        <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
-                        <SelectContent>
-                          {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
+                <CardContent className="pt-6">
+                  <form onSubmit={handleGeneratePlanning} className="space-y-6">
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Choisir le Championnat (Catégorie)</Label>
+                        <Select 
+                          value={planningConfig.categoryId} 
+                          onValueChange={(v) => setPlanningConfig({...planningConfig, categoryId: v})}
+                        >
+                          <SelectTrigger className="rounded-xl"><SelectValue placeholder="Sélectionner..." /></SelectTrigger>
+                          <SelectContent>
+                            {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name} ({c.teams?.length || 0} équipes)</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Formule du Championnat</Label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPlanningConfig({...planningConfig, type: 'simple'})}
+                            className={`py-1.5 px-3 border rounded-xl text-xs font-semibold flex flex-col items-center justify-center gap-0.5 transition-all ${planningConfig.type === 'simple' ? 'border-primary bg-primary/5 text-primary' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            <span>Simple Aller</span>
+                            <span className="text-[9px] text-slate-400 font-normal">Rencontre 1 fois</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPlanningConfig({...planningConfig, type: 'aller-retour'})}
+                            className={`py-1.5 px-3 border rounded-xl text-xs font-semibold flex flex-col items-center justify-center gap-0.5 transition-all ${planningConfig.type === 'aller-retour' ? 'border-primary bg-primary/5 text-primary' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            <span>Aller-Retour</span>
+                            <span className="text-[9px] text-slate-400 font-normal">Domicile et Extérieur</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Nom du Terrain</Label>
+                        <div className="relative">
+                          <MapPin className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                          <Input 
+                            value={planningConfig.terrain} 
+                            onChange={(e) => setPlanningConfig({...planningConfig, terrain: e.target.value})} 
+                            placeholder="ex: Stade Municipal" 
+                            className="pl-9 rounded-xl"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Matchs par Semaine</Label>
+                        <Input 
+                          type="number" 
+                          min={1} 
+                          value={planningConfig.matchesPerWeek} 
+                          onChange={(e) => setPlanningConfig({...planningConfig, matchesPerWeek: Number(e.target.value)})} 
+                          className="rounded-xl"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Durée du Match (Mi-temps)</Label>
+                        <div className="flex items-center gap-2">
+                          <Input 
+                            type="number" 
+                            min={10} 
+                            max={60} 
+                            value={planningConfig.halfDuration} 
+                            onChange={(e) => setPlanningConfig({...planningConfig, halfDuration: Number(e.target.value)})} 
+                            className="rounded-xl"
+                          />
+                          <span className="text-xs text-slate-500 font-semibold whitespace-nowrap">min/mi-temps</span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Date de début du calendrier</Label>
+                        <Input 
+                          type="date" 
+                          value={planningConfig.startDate} 
+                          onChange={(e) => setPlanningConfig({...planningConfig, startDate: e.target.value})} 
+                          className="rounded-xl"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-slate-700">Heure de début des Matchs</Label>
+                        <Input 
+                          type="time" 
+                          value={planningConfig.startHour} 
+                          onChange={(e) => setPlanningConfig({...planningConfig, startHour: e.target.value})} 
+                          className="rounded-xl"
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label>Arbitre Central</Label>
-                      <Select 
-                        value={newDesignation.centralId || ""} 
-                        onValueChange={(v) => setNewDesignation({...newDesignation, centralId: v})}
-                      >
-                        <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
-                        <SelectContent>
-                          {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
+
+                    <div className="space-y-2 pt-4 border-t">
+                      <Label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-primary" />
+                        Jours de la semaine disponibles
+                      </Label>
+                      <p className="text-xs text-slate-400">Cochez les jours prévisibles pour l'organisation de matches dans la semaine :</p>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {[
+                          { id: 1, name: 'Lundi' },
+                          { id: 2, name: 'Mardi' },
+                          { id: 3, name: 'Mercredi' },
+                          { id: 4, name: 'Jeudi' },
+                          { id: 5, name: 'Vendredi' },
+                          { id: 6, name: 'Samedi' },
+                          { id: 0, name: 'Dimanche' }
+                        ].map(day => {
+                          const active = planningConfig.weekDays.includes(day.id);
+                          return (
+                            <button
+                              key={day.id}
+                              type="button"
+                              onClick={() => {
+                                const current = [...planningConfig.weekDays];
+                                if (current.includes(day.id)) {
+                                  setPlanningConfig({...planningConfig, weekDays: current.filter(id => id !== day.id)});
+                                } else {
+                                  setPlanningConfig({...planningConfig, weekDays: [...current, day.id]});
+                                }
+                              }}
+                              className={`py-1.5 px-3.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1.5 ${active ? 'bg-primary text-white shadow-md' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}`}
+                            >
+                              {active && <span className="text-[10px]">✓</span>}
+                              {day.name}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label>Assistant 1</Label>
-                      <Select 
-                        value={newDesignation.assistant1Id || ""} 
-                        onValueChange={(v) => setNewDesignation({...newDesignation, assistant1Id: v})}
-                      >
-                        <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Aucun</SelectItem>
-                          {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Assistant 2</Label>
-                      <Select 
-                        value={newDesignation.assistant2Id || ""} 
-                        onValueChange={(v) => setNewDesignation({...newDesignation, assistant2Id: v})}
-                      >
-                        <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Aucun</SelectItem>
-                          {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>4ème Arbitre</Label>
-                      <Select 
-                        value={newDesignation.fourthId || ""} 
-                        onValueChange={(v) => setNewDesignation({...newDesignation, fourthId: v})}
-                      >
-                        <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Aucun</SelectItem>
-                          {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Date</Label>
-                      <Input type="date" value={newDesignation.date} onChange={(e) => setNewDesignation({...newDesignation, date: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Équipe A</Label>
-                      <Input value={newDesignation.teamA} onChange={(e) => setNewDesignation({...newDesignation, teamA: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Équipe B</Label>
-                      <Input value={newDesignation.teamB} onChange={(e) => setNewDesignation({...newDesignation, teamB: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>N° Match</Label>
-                      <Input value={newDesignation.matchNumber} onChange={(e) => setNewDesignation({...newDesignation, matchNumber: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Heure Début</Label>
-                      <Input type="time" value={newDesignation.startTime} onChange={(e) => setNewDesignation({...newDesignation, startTime: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Heure Fin</Label>
-                      <Input type="time" value={newDesignation.endTime} onChange={(e) => setNewDesignation({...newDesignation, endTime: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Terrain</Label>
-                      <Input value={newDesignation.terrain || ""} onChange={(e) => setNewDesignation({...newDesignation, terrain: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Assesseur</Label>
-                      <Input value={newDesignation.assessor || ""} onChange={(e) => setNewDesignation({...newDesignation, assessor: e.target.value})} />
-                    </div>
-                    <div className="flex items-end">
-                      <Button type="submit" className="w-full gap-2">
-                        <PlusCircle className="w-4 h-4" /> Enregistrer
+
+                    <div className="flex justify-end pt-2">
+                      <Button type="submit" className="gap-2 bg-indigo-600 hover:bg-indigo-700 rounded-xl px-6 py-2">
+                        <Trophy className="w-4 h-4" />
+                        Créer et Générer le Planning
                       </Button>
                     </div>
                   </form>
@@ -1382,10 +2163,45 @@ export default function App() {
                 </div>
                 
                 <div className="flex flex-wrap items-center gap-2">
+                  <Button 
+                    type="button"
+                    onClick={() => setShowCalendarView(true)} 
+                    size="sm" 
+                    variant="outline" 
+                    className="gap-1.5 border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100 h-8 text-xs font-bold rounded-lg px-2.5"
+                  >
+                    <CalendarDays className="w-4 h-4 text-indigo-600" />
+                    Voir le Calendrier
+                  </Button>
+
+                  <Button 
+                    type="button"
+                    onClick={() => setShowClubShareModal(true)} 
+                    size="sm" 
+                    variant="outline" 
+                    className="gap-1.5 border-emerald-200 text-emerald-700 bg-emerald-50/50 hover:bg-emerald-100 h-8 text-xs font-bold rounded-lg px-2.5"
+                  >
+                    <Share2 className="w-4 h-4 text-emerald-600" />
+                    Envoyer aux Clubs
+                  </Button>
+
+                  <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg">
+                    <Trophy className="w-3 h-3 ml-2 text-slate-500" />
+                    <Select value={historyCategoryFilter} onValueChange={(v: string) => setHistoryCategoryFilter(v)}>
+                      <SelectTrigger className="w-[120px] h-8 border-none bg-transparent shadow-none focus:ring-0 text-xs font-semibold">
+                        <SelectValue placeholder="Catégorie..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Toutes les catégories</SelectItem>
+                        {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
                   <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg">
                     <Filter className="w-3 h-3 ml-2 text-slate-500" />
                     <Select value={historyFilter} onValueChange={(v: any) => setHistoryFilter(v)}>
-                      <SelectTrigger className="w-[140px] h-8 border-none bg-transparent shadow-none focus:ring-0 text-xs">
+                      <SelectTrigger className="w-[110px] h-8 border-none bg-transparent shadow-none focus:ring-0 text-xs">
                         <SelectValue placeholder="Trier par..." />
                       </SelectTrigger>
                       <SelectContent>
@@ -1407,73 +2223,572 @@ export default function App() {
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="p-0 sm:p-6">
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-12">
-                          <input 
-                            type="checkbox" 
-                            className="rounded border-slate-300"
-                            checked={selectedDesignationIds.length === historyDesignations.length && historyDesignations.length > 0}
-                            onChange={toggleSelectAll}
-                          />
-                        </TableHead>
-                        <TableHead className="text-xs sm:text-sm">Matc N°</TableHead>
-                        <TableHead className="text-xs sm:text-sm">Date</TableHead>
-                        <TableHead className="text-xs sm:text-sm">Affiche</TableHead>
-                        <TableHead className="text-xs sm:text-sm">Catégorie</TableHead>
-                        <TableHead className="text-right text-xs sm:text-sm">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {historyDesignations.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((d) => (
-                        <TableRow key={d.id} className={selectedDesignationIds.includes(d.id) ? "bg-primary/5" : ""}>
-                          <TableCell>
-                             <input 
-                              type="checkbox" 
-                              className="rounded border-slate-300"
-                              checked={selectedDesignationIds.includes(d.id)}
-                              onChange={() => toggleSelect(d.id)}
-                            />
-                          </TableCell>
-                          <TableCell className="text-xs sm:text-sm font-medium">{d.matchNumber}</TableCell>
-                          <TableCell className="text-xs sm:text-sm whitespace-nowrap">{d.date}</TableCell>
-                          <TableCell className="text-xs sm:text-sm max-w-[150px] truncate">
-                            {d.teamA} <span className="text-muted-foreground mx-1">vs</span> {d.teamB}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant="outline" className="text-[10px] sm:text-xs whitespace-nowrap">
-                              {categories.find(c => c.id === d.categoryId)?.name || 'N/A'}
+              <CardContent className="p-4 sm:p-6 space-y-6">
+                {categories
+                  .filter(c => historyCategoryFilter === 'all' || c.id === historyCategoryFilter)
+                  .map((cat) => {
+                    const catMatches = historyDesignations
+                      .filter(d => d.categoryId === cat.id)
+                      .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                    const isExpanded = expandedCategories.includes(cat.id);
+                    const toggleExpand = () => {
+                      if (isExpanded) {
+                        setExpandedCategories(expandedCategories.filter(id => id !== cat.id));
+                      } else {
+                        setExpandedCategories([...expandedCategories, cat.id]);
+                      }
+                    };
+
+                    return (
+                      <div key={cat.id} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm transition-all hover:border-indigo-200">
+                        {/* Header bar - click to explore / collapse */}
+                        <div 
+                          className={`py-3.5 px-4 flex flex-col sm:flex-row sm:items-center justify-between border-b gap-3 cursor-pointer select-none transition-all ${isExpanded ? 'bg-indigo-50/20' : 'bg-slate-50/50 hover:bg-slate-50'}`}
+                          onClick={toggleExpand}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-1 rounded-md hover:bg-slate-200/50 transition-colors">
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4 text-indigo-600 transition-transform duration-200" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4 text-slate-500 transition-transform duration-200" />
+                              )}
+                            </div>
+                            <span className="p-1 px-2.5 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-bold flex items-center gap-1.5 font-sans">
+                              🏆 {cat.name}
+                            </span>
+                            <Badge variant={catMatches.length > 0 ? "secondary" : "outline"} className={`text-[10px] font-semibold ${catMatches.length > 0 ? 'bg-indigo-100/50 text-indigo-700' : 'text-slate-400 border-slate-100'}`}>
+                              {catMatches.length} {catMatches.length > 1 ? 'matchs' : 'match'}
                             </Badge>
-                          </TableCell>
-                          <TableCell className="text-right whitespace-nowrap">
-                            {(user?.role === 'admin' || user?.role === 'manager') && (
-                              <>
-                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setEditingDesignation(d)}>
-                                  <Pencil className="w-3 h-3 text-primary" />
-                                </Button>
-                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => deleteItem('designations', d.id)}>
-                                  <Trash2 className="w-3 h-3 text-destructive" />
-                                </Button>
-                              </>
+                          </div>
+                          
+                          <div className="flex flex-wrap items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                            <span className="text-[10px] text-slate-400 font-semibold font-mono">
+                              Frais : AC {cat.centralFee} | AR {cat.assistantFee} | 4e {cat.fourthFee} DJF
+                            </span>
+
+                            {catMatches.length > 0 && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                type="button"
+                                className="h-6 text-[10px] text-indigo-600 font-bold hover:bg-slate-200/50 px-2 rounded-lg"
+                                onClick={() => {
+                                  const catMatchIds = catMatches.map(m => m.id);
+                                  const allSelected = catMatchIds.every(id => selectedDesignationIds.includes(id));
+                                  if (allSelected) {
+                                    setSelectedDesignationIds(prev => prev.filter(id => !catMatchIds.includes(id)));
+                                  } else {
+                                    setSelectedDesignationIds(prev => Array.from(new Set([...prev, ...catMatchIds])));
+                                  }
+                                }}
+                              >
+                                {catMatches.every(m => selectedDesignationIds.includes(m.id)) ? "Désélectionner tout" : "Sélectionner tout"}
+                              </Button>
                             )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {historyDesignations.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
-                            Aucun match trouvé pour cette période
-                          </TableCell>
-                        </TableRow>
+
+                            {(user?.role === 'admin' || user?.role === 'manager') && catMatches.length > 0 && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                type="button"
+                                className="h-6 text-[10px] text-rose-600 font-bold hover:bg-rose-50 hover:text-rose-700 px-2.5 rounded-lg flex items-center gap-1 border border-rose-100"
+                                onClick={() => setCategoryToDeleteCalendar({ id: cat.id, name: cat.name })}
+                                title="Supprimer tout le calendrier de cette catégorie"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                Supprimer le calendrier
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Collapsible details / explorer portion */}
+                        {isExpanded && (
+                          <div className="overflow-hidden bg-white">
+                            {catMatches.length === 0 ? (
+                              <div className="p-8 text-center bg-slate-50/20 text-slate-400 text-xs">
+                                <Calendar className="w-8 h-8 mx-auto text-slate-300 opacity-60 mb-2" />
+                                <p className="font-semibold text-slate-500">Aucun match disponible pour cette catégorie.</p>
+                                <p className="text-[11px] text-slate-400 mt-1">Vous pouvez générer un calendrier complet de matches en utilisant le module de génération automatique ci-dessus.</p>
+                              </div>
+                            ) : (
+                              <div className="overflow-x-auto">
+                          <Table>
+                            <TableHeader className="bg-slate-50/20">
+                              <TableRow>
+                                <TableHead className="w-12 px-4"></TableHead>
+                                <TableHead className="text-xs font-bold font-mono text-slate-500 uppercase tracking-wider">N° Match</TableHead>
+                                <TableHead className="text-xs font-bold text-slate-500 uppercase tracking-wider font-sans">Date & Heure</TableHead>
+                                <TableHead className="text-xs font-bold text-slate-500 uppercase tracking-wider font-sans">Affiche</TableHead>
+                                <TableHead className="text-xs font-bold text-slate-500 uppercase tracking-wider font-sans">Terrain</TableHead>
+                                <TableHead className="text-xs font-bold text-slate-500 uppercase tracking-wider font-sans">Assesseur</TableHead>
+                                <TableHead className="text-xs font-bold text-slate-500 uppercase tracking-wider font-sans">Commissaire du Maire</TableHead>
+                                <TableHead className="text-xs font-bold text-slate-500 uppercase tracking-wider font-sans">Arbitres désignés</TableHead>
+                                {(user?.role === 'admin' || user?.role === 'manager') && (
+                                  <TableHead className="text-right text-xs font-bold text-slate-500 uppercase tracking-wider px-6 font-sans">Actions</TableHead>
+                                )}
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {catMatches.map((d) => {
+                                const central = referees.find(r => r.id === d.centralId);
+                                const ass1 = referees.find(r => r.id === d.assistant1Id);
+                                const ass2 = referees.find(r => r.id === d.assistant2Id);
+                                const fourth = referees.find(r => r.id === d.fourthId);
+
+                                return (
+                                  <TableRow key={d.id} className={`${selectedDesignationIds.includes(d.id) ? "bg-indigo-50/20" : ""} hover:bg-slate-50/50 transition-colors`}>
+                                    <TableCell className="px-4">
+                                      <input 
+                                        type="checkbox" 
+                                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                        checked={selectedDesignationIds.includes(d.id)}
+                                        onChange={() => toggleSelect(d.id)}
+                                      />
+                                    </TableCell>
+                                    <TableCell className="text-xs sm:text-sm font-semibold text-slate-700">
+                                      <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600 text-[11px] font-mono border">
+                                        {d.matchNumber || '-'}
+                                      </span>
+                                    </TableCell>
+                                    <TableCell className="text-xs sm:text-sm whitespace-nowrap text-slate-600 font-medium">
+                                      <div className="flex flex-col">
+                                        <span>{d.date}</span>
+                                        <span className="text-[10px] text-slate-400 font-mono">{d.startTime} - {d.endTime}</span>
+                                      </div>
+                                    </TableCell>
+                                    <TableCell className="text-xs sm:text-sm font-bold text-slate-800">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="truncate max-w-[120px]">{d.teamA}</span>
+                                        <span className="text-[10px] text-slate-400 font-normal">vs</span>
+                                        <span className="truncate max-w-[120px]">{d.teamB}</span>
+                                      </div>
+                                    </TableCell>
+                                    <TableCell className="text-xs text-slate-600 font-medium truncate max-w-[120px]">
+                                      {d.terrain || 'Non défini'}
+                                    </TableCell>
+                                    <TableCell className="text-xs text-slate-500 font-medium truncate max-w-[100px]">
+                                      {d.assessor || '-'}
+                                    </TableCell>
+                                    <TableCell className="text-xs text-slate-500 font-medium truncate max-w-[120px]">
+                                      {d.mayorCommissioner || '-'}
+                                    </TableCell>
+                                    <TableCell className="text-[11px] text-slate-500 max-w-[280px]">
+                                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 leading-tight font-medium">
+                                        <div className="truncate"><span className="text-slate-400 font-semibold font-mono">AC:</span> {central?.name || <span className="text-amber-500 italic">Non désigné</span>}</div>
+                                        {d.assistant1Id && d.assistant1Id !== 'none' && (
+                                          <div className="truncate"><span className="text-slate-400 font-semibold font-mono">AR1:</span> {ass1?.name || <span className="text-amber-500 italic">Non désigné</span>}</div>
+                                        )}
+                                        {d.assistant2Id && d.assistant2Id !== 'none' && (
+                                          <div className="truncate"><span className="text-slate-400 font-semibold font-mono">AR2:</span> {ass2?.name || <span className="text-amber-500 italic">Non désigné</span>}</div>
+                                        )}
+                                        {d.fourthId && d.fourthId !== 'none' && (
+                                          <div className="truncate"><span className="text-slate-400 font-semibold font-mono">4e:</span> {fourth?.name || <span className="text-amber-500 italic">Non désigné</span>}</div>
+                                        )}
+                                      </div>
+                                    </TableCell>
+                                    <TableCell className="text-right whitespace-nowrap px-6">
+                                      {(user?.role === 'admin' || user?.role === 'manager') && (
+                                        <div className="flex items-center justify-end gap-1">
+                                          <Button 
+                                            variant="ghost" 
+                                            size="icon" 
+                                            className="h-8 w-8 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-slate-400" 
+                                            onClick={() => setEditingDesignation(d)}
+                                            title="Modifier le match/les arbitres"
+                                          >
+                                            <Pencil className="w-3.5 h-3.5" />
+                                          </Button>
+                                          <Button 
+                                            variant="ghost" 
+                                            size="icon" 
+                                            className="h-8 w-8 hover:bg-rose-50 hover:text-rose-600 rounded-lg" 
+                                            onClick={() => deleteItem('designations', d.id)}
+                                            title="Supprimer ce match"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                          </Button>
+                                        </div>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        </div>
                       )}
-                    </TableBody>
-                  </Table>
+                    </div>
+                  )}
                 </div>
+              );
+            })}
+
+                {historyDesignations.length === 0 && (
+                  <div className="border border-dashed border-slate-200 bg-slate-50/50 py-16 text-center rounded-2xl">
+                    <div className="flex flex-col items-center justify-center space-y-3">
+                      <CalendarDays className="w-12 h-12 stroke-1.5 opacity-40 text-slate-400" />
+                      <h4 className="font-semibold text-slate-700 text-base">Aucun match trouvé pour cette période</h4>
+                      <p className="text-xs text-slate-400 max-w-sm">Ajustez vos filtres temporels ou de catégorie pour visualiser vos désignations de matches.</p>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="matches" className="space-y-6">
+            <div className="grid lg:grid-cols-3 gap-6">
+              {/* Saisie Form side */}
+              <Card className="lg:col-span-1 border-none shadow-md bg-white">
+                <CardHeader>
+                  <CardTitle className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Trophy className="w-5 h-5 text-indigo-600" />
+                    Saisie Feuille de Match
+                  </CardTitle>
+                  <CardDescription className="text-xs text-slate-500">
+                    Saisissez ou modifiez les résultats, cartons et observations d'un match officiel.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleSaveMatchSheet} className="space-y-4">
+                    {/* Assistant Dropdown to select scheduled match */}
+                    <div className="space-y-2">
+                      <Label className="text-xs font-bold text-slate-700">Sélectionner un Match Planifié (optionnel)</Label>
+                      <Select 
+                        value={selectedMatchForSheet} 
+                        onValueChange={handleSelectMatchForSaisie}
+                      >
+                        <SelectTrigger className="rounded-xl text-xs bg-slate-50 border-slate-200">
+                          <SelectValue placeholder="Choisir un match planifié..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="custom">-- Saisie Manuelle Libre --</SelectItem>
+                          {designations.map(d => {
+                            const cat = categories.find(c => c.id === d.categoryId);
+                            return (
+                              <SelectItem key={d.id} value={d.id}>
+                                {cat?.name} (N°{d.matchNumber || '-'}) : {d.teamA} vs {d.teamB} ({d.date})
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[10px] text-slate-400">La sélection charge automatiquement la catégorie, les équipes et le numéro de match.</p>
+                    </div>
+
+                    <div className="border-t border-slate-100 pt-3 space-y-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-slate-700">Catégorie</Label>
+                        <Select 
+                          value={sheetForm.categoryId} 
+                          onValueChange={(v) => setSheetForm({...sheetForm, categoryId: v})}
+                          disabled={selectedMatchForSheet !== "" && selectedMatchForSheet !== "custom"}
+                        >
+                          <SelectTrigger className="rounded-xl text-xs">
+                            <SelectValue placeholder="Sélectionner..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-slate-700">N° Match</Label>
+                        <Input 
+                          value={sheetForm.matchNumber} 
+                          onChange={(e) => setSheetForm({...sheetForm, matchNumber: e.target.value})} 
+                          placeholder="Ex: M1"
+                          disabled={selectedMatchForSheet !== "" && selectedMatchForSheet !== "custom"}
+                          className="rounded-xl h-9 text-xs"
+                        />
+                      </div>
+
+                      {/* Score row preview / editable */}
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-2">
+                        <span className="text-[11px] font-bold text-indigo-600 block text-center uppercase tracking-wider">Scores de la rencontre</span>
+                        <div className="grid grid-cols-2 gap-3 items-center">
+                          <div className="space-y-1 text-center">
+                            <Label className="text-[10px] font-semibold text-slate-500 truncate block">
+                              {selectedMatchForSheet && selectedMatchForSheet !== "custom" 
+                                ? (designations.find(d => d.id === selectedMatchForSheet)?.teamA || "Équipe A") 
+                                : "Équipe A"}
+                            </Label>
+                            <Input 
+                              type="number" 
+                              min={0}
+                              value={sheetForm.scoreA} 
+                              onChange={(e) => setSheetForm({...sheetForm, scoreA: Number(e.target.value) || 0})}
+                              className="text-center font-mono font-bold text-base h-9 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1 text-center">
+                            <Label className="text-[10px] font-semibold text-slate-500 truncate block">
+                              {selectedMatchForSheet && selectedMatchForSheet !== "custom" 
+                                ? (designations.find(d => d.id === selectedMatchForSheet)?.teamB || "Équipe B") 
+                                : "Équipe B"}
+                            </Label>
+                            <Input 
+                              type="number" 
+                              min={0}
+                              value={sheetForm.scoreB} 
+                              onChange={(e) => setSheetForm({...sheetForm, scoreB: Number(e.target.value) || 0})}
+                              className="text-center font-mono font-bold text-base h-9 rounded-lg"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-slate-700">Buteurs (Buteurs et minutes)</Label>
+                        <textarea 
+                          rows={2}
+                          value={sheetForm.scorers} 
+                          onChange={(e) => setSheetForm({...sheetForm, scorers: e.target.value})} 
+                          placeholder="Ex: Jean Dupont (12'), Marc Henry (44')" 
+                          className="w-full text-xs p-2.5 border rounded-xl bg-white border-slate-200 focus:outline-none focus:ring-1 focus:ring-primary whitespace-pre-wrap"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-slate-700">Avertissements / Cartons</Label>
+                        <textarea 
+                          rows={2}
+                          value={sheetForm.cards} 
+                          onChange={(e) => setSheetForm({...sheetForm, cards: e.target.value})} 
+                          placeholder="Ex: 🟨 Carton jaune pour 9 d'Équipe A" 
+                          className="w-full text-xs p-2.5 border rounded-xl bg-white border-slate-200 focus:outline-none focus:ring-1 focus:ring-primary whitespace-pre-wrap"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs font-bold text-slate-700">Observations / Rapports de match</Label>
+                        <textarea 
+                          rows={2}
+                          value={sheetForm.observations} 
+                          onChange={(e) => setSheetForm({...sheetForm, observations: e.target.value})} 
+                          placeholder="Remarques additionnelles sur le match, réclamations ou fairplay." 
+                          className="w-full text-xs p-2.5 border rounded-xl bg-white border-slate-200 focus:outline-none focus:ring-1 focus:ring-primary whitespace-pre-wrap"
+                        />
+                      </div>
+
+                      {/* Scanned sheet file upload block */}
+                      <div className="space-y-1.5 pt-2">
+                        <Label className="text-xs font-bold text-slate-700">Téléverser la feuille de match scannée</Label>
+                        <div 
+                          className="border-2 border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50 p-4 rounded-xl flex flex-col items-center justify-center text-center cursor-pointer transition-all relative"
+                          onClick={() => document.getElementById('match-sheet-file-picker')?.click()}
+                        >
+                          <input 
+                            type="file" 
+                            id="match-sheet-file-picker" 
+                            accept="image/*,application/pdf" 
+                            className="hidden" 
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                if (file.size > 8 * 1024 * 1024) {
+                                  toast.error("La taille du fichier ne doit pas dépasser 8 Mo.");
+                                  return;
+                                }
+                                const reader = new FileReader();
+                                reader.onloadend = () => {
+                                  setSheetForm({
+                                    ...sheetForm,
+                                    scannedSheet: reader.result as string
+                                  });
+                                  toast.success(`Fichier "${file.name}" chargé avec succès !`);
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                          {sheetForm.scannedSheet ? (
+                            <div className="space-y-2 w-full flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
+                              {sheetForm.scannedSheet.startsWith('data:image/') ? (
+                                <img src={sheetForm.scannedSheet} alt="Feuille scannée" className="max-h-24 max-w-full rounded border border-slate-200 shadow-sm object-contain" referrerPolicy="no-referrer" />
+                              ) : (
+                                <div className="p-3 bg-indigo-50/50 text-indigo-700 rounded-lg text-xs font-bold flex items-center gap-2 border border-indigo-100">
+                                  <FileText className="w-5 h-5 text-indigo-500" /> Document PDF Chargé
+                                </div>
+                              )}
+                              <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">✓ Fichier prêt à l'enregistrement</p>
+                              <div className="flex gap-2 justify-center pt-1">
+                                <Button 
+                                  variant="outline" 
+                                  size="sm"
+                                  type="button" 
+                                  className="h-6 text-[10px] px-2 text-rose-500 border-rose-100 hover:bg-rose-50"
+                                  onClick={() => setSheetForm({ ...sheetForm, scannedSheet: "" })}
+                                >
+                                  Supprimer
+                                </Button>
+                                <Button 
+                                  variant="outline" 
+                                  size="sm"
+                                  type="button" 
+                                  className="h-6 text-[10px] px-2 text-indigo-600 border-indigo-100 hover:bg-indigo-50"
+                                  onClick={() => {
+                                    const win = window.open();
+                                    if (win) {
+                                      win.document.write(`<iframe src="${sheetForm.scannedSheet}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+                                    }
+                                  }}
+                                >
+                                  Voir
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="py-2 flex flex-col items-center justify-center">
+                              <Upload className="w-7 h-7 text-indigo-500 mb-1.5 opacity-80" />
+                              <span className="text-xs font-semibold text-slate-700">Choisir ou glisser un scan</span>
+                              <p className="text-[10px] text-slate-400 mt-0.5">Formats image ou PDF (Max. 8 Mo)</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {(user?.role === 'admin' || user?.role === 'manager') ? (
+                      <Button type="submit" className="w-full h-10 text-xs rounded-xl font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md font-sans">
+                        Enregistrer la Feuille de Match
+                      </Button>
+                    ) : (
+                      <p className="text-[11px] text-rose-500 font-semibold text-center italic">Vos droits de lecture seule ne vous permettent pas de saisir de résultats.</p>
+                    )}
+                  </form>
+                </CardContent>
+              </Card>
+
+              {/* Saved Match sheets lists */}
+              <div className="lg:col-span-2 space-y-6">
+                <Card className="border-none shadow-md overflow-hidden bg-white">
+                  <CardHeader className="flex flex-row items-center justify-between border-b pb-4 bg-slate-50/20">
+                    <div>
+                      <CardTitle className="text-lg font-bold text-slate-800">Feuilles de Match Enregistrées</CardTitle>
+                      <CardDescription className="text-xs text-slate-500">
+                        Visualisez les détails des matchs terminés et validés par les officiels.
+                      </CardDescription>
+                    </div>
+                    <Badge variant="outline" className="border-indigo-100 bg-indigo-50 text-indigo-700 font-semibold">
+                      {matchSheets.length} Saisis
+                    </Badge>
+                  </CardHeader>
+                  <CardContent className="p-4 sm:p-6">
+                    {matchSheets.length === 0 ? (
+                      <div className="text-center py-16 border border-dashed border-slate-200 rounded-2xl bg-slate-50/40">
+                        <Trophy className="w-12 h-12 stroke-1.5 opacity-20 text-slate-400 mx-auto mb-3" />
+                        <h4 className="font-semibold text-slate-700 text-sm">Aucune feuille d'après-match enregistrée</h4>
+                        <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 font-sans">
+                          Sélectionnez ou créez un match libre sur le formulaire de gauche pour valider sa feuille de match.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="grid sm:grid-cols-2 gap-4">
+                        {matchSheets.map((sheet) => {
+                          const catObj = categories.find(c => c.id === sheet.categoryId);
+                          const matchingMatch = designations.find(d => d.categoryId === sheet.categoryId && d.matchNumber === sheet.matchNumber);
+                          const tA = matchingMatch?.teamA || "Équipe A";
+                          const tB = matchingMatch?.teamB || "Équipe B";
+                          
+                          return (
+                            <div key={sheet.id} className="border border-slate-100 bg-white rounded-2xl p-4 shadow-sm hover:shadow-md hover:border-indigo-100 transition-all flex flex-col justify-between space-y-3">
+                              <div className="flex items-center justify-between border-b pb-2">
+                                <div className="flex items-center gap-1.5">
+                                  <Badge className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[10px] border-none font-sans">
+                                    {catObj?.name || "Catégorie"}
+                                  </Badge>
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-mono font-bold uppercase">
+                                  N° {sheet.matchNumber}
+                                </span>
+                              </div>
+
+                              <div className="bg-slate-50 border p-3 rounded-xl flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-700 truncate max-w-[90px]">{tA}</span>
+                                <span className="text-base font-bold font-mono text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-0.5 rounded-lg">
+                                  {sheet.scoreA} - {sheet.scoreB}
+                                </span>
+                                <span className="text-xs font-bold text-slate-700 truncate max-w-[90px] text-right">{tB}</span>
+                              </div>
+
+                              <div className="text-xs space-y-2 text-slate-600 border-t pt-2">
+                                {sheet.scorers && (
+                                  <div>
+                                    <span className="font-bold text-slate-700 block text-[10px] uppercase tracking-wider font-sans">⚽ Buteurs :</span>
+                                    <p className="text-slate-500 pl-1 text-[11px] whitespace-pre-wrap">{sheet.scorers}</p>
+                                  </div>
+                                )}
+                                {sheet.cards && (
+                                  <div>
+                                    <span className="font-bold text-slate-700 block text-[10px] uppercase tracking-wider font-sans">🟨🟥 Sanctions :</span>
+                                    <p className="text-slate-500 pl-1 text-[11px] whitespace-pre-wrap">{sheet.cards}</p>
+                                  </div>
+                                )}
+                                {sheet.observations && (
+                                  <div>
+                                    <span className="font-bold text-slate-700 block text-[10px] uppercase tracking-wider font-sans">📝 Observations & Rapports :</span>
+                                    <p className="text-slate-400 pl-1 italic text-[11px] whitespace-pre-wrap">{sheet.observations}</p>
+                                  </div>
+                                )}
+                                {sheet.scannedSheet && (
+                                  <div className="pt-1.5">
+                                    <span className="font-bold text-slate-700 block text-[10px] uppercase tracking-wider font-sans mb-1">📄 Feuille de match scannée :</span>
+                                    <Button 
+                                      variant="outline" 
+                                      size="sm" 
+                                      className="h-7 text-xs font-semibold text-indigo-700 border-indigo-100 bg-indigo-50 hover:bg-indigo-100/80 flex items-center gap-1.5 w-full justify-center transition-colors font-sans"
+                                      onClick={() => {
+                                        const win = window.open();
+                                        if (win) {
+                                          win.document.write(`<iframe src="${sheet.scannedSheet}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%; shadow:0;" allowfullscreen></iframe>`);
+                                        }
+                                      }}
+                                    >
+                                      <Eye className="w-3.5 h-3.5" /> Voir la feuille de match
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+
+                              {(user?.role === 'admin' || user?.role === 'manager') && (
+                                <div className="flex items-center justify-end gap-1 border-t pt-2">
+                                  <Button 
+                                    size="sm" 
+                                    variant="ghost" 
+                                    className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-slate-100 shrink-0 font-sans"
+                                    onClick={() => {
+                                      const fallbackId = matchingMatch?.id || "custom";
+                                      setSelectedMatchForSheet(fallbackId);
+                                      setSheetForm({
+                                        categoryId: sheet.categoryId,
+                                        matchNumber: sheet.matchNumber,
+                                        scoreA: sheet.scoreA,
+                                        scoreB: sheet.scoreB,
+                                        scorers: sheet.scorers,
+                                        cards: sheet.cards,
+                                        observations: sheet.observations,
+                                        scannedSheet: sheet.scannedSheet || ""
+                                      });
+                                    }}
+                                  >
+                                    Modifier
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
           </TabsContent>
 
           <TabsContent value="reports" className="space-y-6">
@@ -1681,6 +2996,35 @@ export default function App() {
                   onChange={(e) => editingReferee && setEditingReferee({...editingReferee, grade: e.target.value})} 
                 />
               </div>
+              <div className="space-y-2">
+                <Label>Catégories Autorisées (allowed)</Label>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {categories.map((cat) => {
+                    const isChecked = editingReferee?.allowedCategories?.includes(cat.id);
+                    return (
+                      <label key={cat.id} className="flex items-center gap-2 bg-slate-50 border hover:bg-slate-100 rounded-lg p-2 cursor-pointer select-none transition-all">
+                        <input 
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary accent-primary cursor-pointer"
+                          checked={isChecked || false}
+                          onChange={(e) => {
+                            if (!editingReferee) return;
+                            const current = editingReferee.allowedCategories || [];
+                            const updated = e.target.checked 
+                              ? [...current, cat.id]
+                              : current.filter(id => id !== cat.id);
+                            setEditingReferee({...editingReferee, allowedCategories: updated});
+                          }}
+                        />
+                        <span className="text-xs font-semibold text-slate-700">{cat.name}</span>
+                      </label>
+                    );
+                  })}
+                  {categories.length === 0 && (
+                    <p className="text-xs text-slate-500 italic">Aucune catégorie créée</p>
+                  )}
+                </div>
+              </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setEditingReferee(null)}>Annuler</Button>
                 <Button type="submit">Enregistrer les modifications</Button>
@@ -1728,6 +3072,72 @@ export default function App() {
                   onChange={(e) => editingCategory && setEditingCategory({...editingCategory, fourthFee: Number(e.target.value)})} 
                 />
               </div>
+
+              <div className="space-y-2 border-t pt-4">
+                <Label className="text-sm font-semibold">Saisie des Équipes</Label>
+                <div className="flex gap-2">
+                  <Input 
+                    value={editTeamsInput} 
+                    onChange={(e) => setEditTeamsInput(e.target.value)} 
+                    placeholder="Nom de l'équipe"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (editTeamsInput.trim() && editingCategory) {
+                          const currentTeams = editingCategory.teams || [];
+                          if (!currentTeams.includes(editTeamsInput.trim())) {
+                            setEditingCategory({
+                              ...editingCategory,
+                              teams: [...currentTeams, editTeamsInput.trim()]
+                            });
+                          }
+                          setEditTeamsInput('');
+                        }
+                      }
+                    }}
+                  />
+                  <Button 
+                    type="button" 
+                    variant="secondary"
+                    onClick={() => {
+                      if (editTeamsInput.trim() && editingCategory) {
+                        const currentTeams = editingCategory.teams || [];
+                        if (!currentTeams.includes(editTeamsInput.trim())) {
+                          setEditingCategory({
+                            ...editingCategory,
+                            teams: [...currentTeams, editTeamsInput.trim()]
+                          });
+                        }
+                        setEditTeamsInput('');
+                      }
+                    }}
+                  >
+                    Ajouter
+                  </Button>
+                </div>
+                
+                {editingCategory && editingCategory.teams && editingCategory.teams.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border rounded-lg max-h-32 overflow-y-auto">
+                    {editingCategory.teams.map((team, idx) => (
+                      <Badge key={idx} variant="secondary" className="flex items-center gap-1 text-[11px] font-medium bg-slate-200 text-slate-800 pr-1 hover:bg-slate-300">
+                        {team}
+                        <span 
+                          onClick={() => {
+                            setEditingCategory({
+                              ...editingCategory,
+                              teams: (editingCategory.teams || []).filter(t => t !== team)
+                            });
+                          }}
+                          className="hover:bg-slate-400 p-0.5 rounded cursor-pointer leading-none text-[8px]"
+                        >
+                          ✕
+                        </span>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setEditingCategory(null)}>Annuler</Button>
                 <Button type="submit">Enregistrer les modifications</Button>
@@ -1771,53 +3181,57 @@ export default function App() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Arbitre Central</Label>
+                <Label>Arbitre Central (allowed only)</Label>
                 <Select 
                   value={editingDesignation?.centralId || ""} 
                   onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, centralId: v})}
+                  disabled={!editingDesignation?.categoryId}
                 >
-                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={editingDesignation?.categoryId ? "Choisir..." : "Sélectionner la catégorie d'abord"} /></SelectTrigger>
                   <SelectContent>
-                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                    {getEligibleReferees(editingDesignation?.categoryId).map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Assistant 1</Label>
+                <Label>Assistant 1 (allowed only)</Label>
                 <Select 
                   value={editingDesignation?.assistant1Id || "none"} 
                   onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, assistant1Id: v})}
+                  disabled={!editingDesignation?.categoryId}
                 >
-                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={editingDesignation?.categoryId ? "Choisir..." : "Sélectionner la catégorie d'abord"} /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Aucun</SelectItem>
-                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                    {getEligibleReferees(editingDesignation?.categoryId).map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Assistant 2</Label>
+                <Label>Assistant 2 (allowed only)</Label>
                 <Select 
                   value={editingDesignation?.assistant2Id || "none"} 
                   onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, assistant2Id: v})}
+                  disabled={!editingDesignation?.categoryId}
                 >
-                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={editingDesignation?.categoryId ? "Choisir..." : "Sélectionner la catégorie d'abord"} /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Aucun</SelectItem>
-                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                    {getEligibleReferees(editingDesignation?.categoryId).map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>4ème Arbitre</Label>
+                <Label>4ème Arbitre (allowed only)</Label>
                 <Select 
                   value={editingDesignation?.fourthId || "none"} 
                   onValueChange={(v) => editingDesignation && setEditingDesignation({...editingDesignation, fourthId: v})}
+                  disabled={!editingDesignation?.categoryId}
                 >
-                  <SelectTrigger><SelectValue placeholder="Choisir..." /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={editingDesignation?.categoryId ? "Choisir..." : "Sélectionner la catégorie d'abord"} /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Aucun</SelectItem>
-                    {referees.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                    {getEligibleReferees(editingDesignation?.categoryId).map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -1837,6 +3251,10 @@ export default function App() {
                 <Label>Assesseur</Label>
                 <Input value={editingDesignation?.assessor || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, assessor: e.target.value})} />
               </div>
+              <div className="space-y-2">
+                <Label>Commissaire du Maire</Label>
+                <Input value={editingDesignation?.mayorCommissioner || ''} onChange={(e) => editingDesignation && setEditingDesignation({...editingDesignation, mayorCommissioner: e.target.value})} />
+              </div>
               <div className="col-span-full flex justify-end gap-2 mt-4">
                 <Button type="button" variant="outline" onClick={() => setEditingDesignation(null)}>Annuler</Button>
                 <Button type="submit">Enregistrer les modifications</Button>
@@ -1844,6 +3262,200 @@ export default function App() {
             </form>
           </DialogContent>
         </Dialog>
+
+        <Dialog open={!!categoryToDeleteCalendar} onOpenChange={(open) => !open && setCategoryToDeleteCalendar(null)}>
+          <DialogContent className="max-w-md rounded-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold text-rose-600 flex items-center gap-2">
+                <Trash2 className="w-5 h-5" />
+                Supprimer tout le calendrier ?
+              </DialogTitle>
+            </DialogHeader>
+            <div className="py-3 text-sm text-slate-600 space-y-2">
+              <p>
+                Vous êtes sur le point de supprimer <strong>toutes les désignations et matchs planifiés</strong> pour la catégorie <strong className="text-slate-800">"{categoryToDeleteCalendar?.name}"</strong>.
+              </p>
+              <p className="text-xs text-rose-500 font-semibold italic">
+                ⚠️ Cette action est définitive et supprimera l'intégralité du calendrier de cette catégorie.
+              </p>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setCategoryToDeleteCalendar(null)} className="rounded-xl">
+                Annuler
+              </Button>
+              <Button 
+                variant="destructive" 
+                onClick={() => categoryToDeleteCalendar && deleteCategoryCalendar(categoryToDeleteCalendar.id)}
+                className="rounded-xl bg-rose-600 hover:bg-rose-700"
+              >
+                Confirmer la suppression
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={showCalendarView} onOpenChange={setShowCalendarView}>
+          <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col p-6 overflow-hidden sm:rounded-2xl">
+            <DialogHeader className="border-b pb-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div>
+                <DialogTitle className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-indigo-600" />
+                  Calendrier de Planification des Matches
+                </DialogTitle>
+                <p className="text-xs text-slate-500 mt-1">
+                  Visualisez toutes les rencontres triées par ordre chronologique et filtrez par catégorie ou championnat.
+                </p>
+              </div>
+            </DialogHeader>
+
+            <div className="flex flex-wrap items-center justify-between gap-4 py-3 bg-slate-50 px-4 rounded-xl border border-slate-100 my-2">
+              <div className="flex items-center gap-2">
+                <Trophy className="w-4 h-4 text-slate-500" />
+                <span className="text-xs font-semibold text-slate-600">Filtrage rapide du Championnat :</span>
+              </div>
+              <Select value={historyCategoryFilter} onValueChange={(v: string) => setHistoryCategoryFilter(v)}>
+                <SelectTrigger className="w-[200px] h-9 bg-white border-slate-200 text-xs font-semibold rounded-xl">
+                  <SelectValue placeholder="Toutes les catégories" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">🏆 Toutes les catégories</SelectItem>
+                  {categories.map(c => (
+                    <SelectItem key={c.id} value={c.id}>⚔️ {c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <ScrollArea className="flex-1 pr-2 max-h-[50vh]">
+              {historyDesignations.length === 0 ? (
+                <div className="text-center py-12 bg-slate-50/50 rounded-2xl border border-dashed text-slate-400">
+                  <CalendarDays className="w-12 h-12 mx-auto mb-3 stroke-1.5 opacity-50 text-slate-400" />
+                  <p className="text-sm font-semibold">Aucun match planifié ou trouvé pour les critères de filtrage actifs.</p>
+                  <p className="text-xs text-slate-400 mt-1">Générez un planning automatique ou créez des désignations manuelles.</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {Object.entries(
+                    historyDesignations.reduce((acc, curr) => {
+                      const dateKey = curr.date || "Date non définie";
+                      if (!acc[dateKey]) acc[dateKey] = [];
+                      acc[dateKey].push(curr);
+                      return acc;
+                    }, {} as Record<string, typeof historyDesignations>)
+                  )
+                    .sort(([dateA], [dateB]) => new Date(dateA).getTime() - new Date(dateB).getTime())
+                    .map(([dateString, matches]) => {
+                      let formattedDate = dateString;
+                      try {
+                        const d = new Date(dateString);
+                        if (!isNaN(d.getTime())) {
+                          formattedDate = d.toLocaleDateString('fr-FR', {
+                            weekday: 'long',
+                            day: 'numeric',
+                            month: 'long',
+                            year: 'numeric'
+                          });
+                        }
+                      } catch {}
+
+                      return (
+                        <div key={dateString} className="space-y-3">
+                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2 border-b pb-1.5 border-slate-100">
+                            <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block"></span>
+                            {formattedDate} ({matches.length} {matches.length > 1 ? 'matchs' : 'match'})
+                          </h4>
+                          <div className="grid sm:grid-cols-2 gap-4">
+                            {matches.map((m) => {
+                              const category = categories.find(c => c.id === m.categoryId);
+                              const central = referees.find(r => r.id === m.centralId);
+                              const ass1 = referees.find(r => r.id === m.assistant1Id);
+                              const ass2 = referees.find(r => r.id === m.assistant2Id);
+                              const fourth = referees.find(r => r.id === m.fourthId);
+
+                              return (
+                                <div key={m.id} className="relative p-4 rounded-xl border border-slate-100 bg-white shadow-sm hover:border-indigo-100 hover:shadow transition-all flex flex-col justify-between gap-3">
+                                  <div>
+                                    <div className="flex items-center justify-between gap-2 mb-2">
+                                      <span className="text-[10px] font-bold bg-slate-100 border text-slate-500 rounded px-1.5 py-0.5">
+                                        N° {m.matchNumber || '-'}
+                                      </span>
+                                      <Badge className="bg-indigo-50 hover:bg-indigo-50 text-indigo-700 border-indigo-100 text-[10px] rounded px-2 font-bold select-none">
+                                        {category?.name || 'Catégorie inconnue'}
+                                      </Badge>
+                                    </div>
+
+                                    <div className="py-1 text-center">
+                                      <p className="text-sm font-bold text-slate-800 flex items-center justify-center gap-1.5">
+                                        <span className="truncate">{m.teamA}</span>
+                                        <span className="text-xs font-normal text-slate-400">vs</span>
+                                        <span className="truncate">{m.teamB}</span>
+                                      </p>
+                                    </div>
+
+                                    <div className="mt-2 space-y-1 text-[10px] text-slate-500 font-medium">
+                                      <div className="flex items-center gap-1.5">
+                                        <Clock className="w-3.5 h-3.5 text-slate-400" />
+                                        <span>Horaire: {m.startTime || '-'} - {m.endTime || '-'}</span>
+                                      </div>
+                                      <div className="flex items-center gap-1.5">
+                                        <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                        <span className="truncate">Terrain: {m.terrain || 'Non défini'}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="border-t pt-2.5 mt-1 space-y-1 bg-slate-50/50 p-2 rounded-lg border border-slate-100/50">
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Corps Arbitral :</p>
+                                    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-slate-600">
+                                      <div className="truncate"><span className="text-slate-400 font-semibold font-mono">Central:</span> {central?.name || 'Non désigné'}</div>
+                                      {m.assistant1Id && m.assistant1Id !== 'none' && (
+                                        <div className="truncate"><span className="text-slate-400 font-semibold font-mono">Ass. 1:</span> {ass1?.name || 'Non désigné'}</div>
+                                      )}
+                                      {m.assistant2Id && m.assistant2Id !== 'none' && (
+                                        <div className="truncate"><span className="text-slate-400 font-semibold font-mono">Ass. 2:</span> {ass2?.name || 'Non désigné'}</div>
+                                      )}
+                                      {m.fourthId && m.fourthId !== 'none' && (
+                                        <div className="truncate"><span className="text-slate-400 font-semibold font-mono">4ème:</span> {fourth?.name || 'Non désigné'}</div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </ScrollArea>
+
+            <DialogFooter className="border-t pt-4 mt-2 flex flex-col sm:flex-row justify-between items-center gap-3">
+              <Button 
+                onClick={() => {
+                  setShowCalendarView(false);
+                  setShowClubShareModal(true);
+                }} 
+                className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 px-4 shadow-md cursor-pointer"
+              >
+                <Share2 className="w-4 h-4" />
+                Exporter & Envoyer aux Clubs
+              </Button>
+              <Button onClick={() => setShowCalendarView(false)} className="w-full sm:w-auto bg-slate-800 hover:bg-slate-900 rounded-xl px-5 cursor-pointer">
+                Fermer le Calendrier
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Global Club Calendar Transmission and Export System */}
+        <ClubCalendarShareModal
+          isOpen={showClubShareModal}
+          onClose={() => setShowClubShareModal(false)}
+          categories={categories}
+          designations={designations}
+          referees={referees}
+        />
           </motion.div>
         )}
         </AnimatePresence>

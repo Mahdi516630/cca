@@ -82,6 +82,13 @@ async function initDb() {
       );
     `;
 
+    // Ensure allowed_categories column exists if table already existed
+    try {
+      await sql`ALTER TABLE referees ADD COLUMN IF NOT EXISTS allowed_categories TEXT DEFAULT '[]'`;
+    } catch (e) {
+      console.log("allowed_categories column likely already exists or table was newly created with it anyway");
+    }
+
     await sql`
       CREATE TABLE IF NOT EXISTS categories (
         id TEXT PRIMARY KEY,
@@ -91,6 +98,13 @@ async function initDb() {
         fourthfee INTEGER DEFAULT 0
       );
     `;
+
+    // Ensure teams column exists if table already existed
+    try {
+      await sql`ALTER TABLE categories ADD COLUMN IF NOT EXISTS teams TEXT DEFAULT '[]'`;
+    } catch (e) {
+      console.log("teams column likely already exists or table was newly created with it anyway");
+    }
 
     await sql`
       CREATE TABLE IF NOT EXISTS designations (
@@ -107,7 +121,37 @@ async function initDb() {
         centralid TEXT REFERENCES referees(id),
         assistant1id TEXT REFERENCES referees(id),
         assistant2id TEXT REFERENCES referees(id),
-        fourthid TEXT REFERENCES referees(id)
+        fourthid TEXT REFERENCES referees(id),
+        mayor_commissioner TEXT
+      );
+    `;
+
+    try {
+      await sql`ALTER TABLE designations ADD COLUMN IF NOT EXISTS mayor_commissioner TEXT`;
+    } catch (e) {
+      console.log("mayor_commissioner column update checked");
+    }
+
+    try {
+      await sql`ALTER TABLE match_sheets ADD COLUMN IF NOT EXISTS scanned_sheet TEXT`;
+    } catch (e) {
+      console.log("scanned_sheet column update checked");
+    }
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS match_sheets (
+        id TEXT PRIMARY KEY,
+        categoryid TEXT NOT NULL,
+        matchnumber TEXT NOT NULL,
+        scorea INTEGER DEFAULT 0,
+        scoreb INTEGER DEFAULT 0,
+        scorers TEXT,
+        cards TEXT,
+        observations TEXT,
+        scanned_sheet TEXT,
+        savedat TEXT,
+        updatedat TEXT,
+        UNIQUE(categoryid, matchnumber)
       );
     `;
     
@@ -140,7 +184,8 @@ async function initDb() {
 initDb();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Auth Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
@@ -245,13 +290,22 @@ app.delete("/api/users/:id", authenticateToken, authorize(['admin']), async (req
 app.get("/api/referees", authenticateToken, authorize(['admin', 'manager', 'audit']), async (req, res) => {
   try {
     const referees = await sql`SELECT * FROM referees ORDER BY name`;
-    const mapped = referees.map((r: any) => ({
-      id: r.id,
-      name: r.name,
-      phone: r.phone,
-      grade: r.grade,
-      createdAt: r.createdAt || r.createdat
-    }));
+    const mapped = referees.map((r: any) => {
+      let allowedCats = [];
+      try {
+        allowedCats = r.allowed_categories ? JSON.parse(r.allowed_categories) : [];
+      } catch (parseErr) {
+        console.error("Error parsing allowed_categories:", parseErr);
+      }
+      return {
+        id: r.id,
+        name: r.name,
+        phone: r.phone,
+        grade: r.grade,
+        createdAt: r.createdAt || r.createdat,
+        allowedCategories: Array.isArray(allowedCats) ? allowedCats : []
+      };
+    });
     res.json(mapped);
   } catch (error) {
     res.status(500).json({ error: "Error fetching referees" });
@@ -259,21 +313,25 @@ app.get("/api/referees", authenticateToken, authorize(['admin', 'manager', 'audi
 });
 
 app.post("/api/referees", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
-  const { id, name, phone, grade, createdAt } = req.body;
+  const { id, name, phone, grade, createdAt, allowedCategories } = req.body;
+  const allowedCategoriesStr = JSON.stringify(allowedCategories || []);
   try {
-    await sql`INSERT INTO referees (id, name, phone, grade, createdAt) VALUES (${id}, ${name}, ${phone}, ${grade}, ${createdAt})`;
+    await sql`INSERT INTO referees (id, name, phone, grade, createdAt, allowed_categories) VALUES (${id}, ${name}, ${phone}, ${grade}, ${createdAt}, ${allowedCategoriesStr})`;
     res.status(201).json({ id });
   } catch (error) {
+    console.error("Error creating referee:", error);
     res.status(500).json({ error: "Error creating referee" });
   }
 });
 
 app.put("/api/referees/:id", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
-  const { name, phone, grade } = req.body;
+  const { name, phone, grade, allowedCategories } = req.body;
+  const allowedCategoriesStr = JSON.stringify(allowedCategories || []);
   try {
-    await sql`UPDATE referees SET name = ${name}, phone = ${phone}, grade = ${grade} WHERE id = ${req.params.id}`;
+    await sql`UPDATE referees SET name = ${name}, phone = ${phone}, grade = ${grade}, allowed_categories = ${allowedCategoriesStr} WHERE id = ${req.params.id}`;
     res.json({ message: "Updated" });
   } catch (error) {
+    console.error("Error updating referee:", error);
     res.status(500).json({ error: "Error updating referee" });
   }
 });
@@ -291,13 +349,22 @@ app.delete("/api/referees/:id", authenticateToken, authorize(['admin', 'manager'
 app.get("/api/categories", authenticateToken, authorize(['admin', 'manager', 'audit']), async (req, res) => {
   try {
     const categories = await sql`SELECT * FROM categories ORDER BY name`;
-    const mapped = categories.map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      centralFee: c.centralFee ?? c.centralfee ?? 0,
-      assistantFee: c.assistantFee ?? c.assistantfee ?? 0,
-      fourthFee: c.fourthFee ?? c.fourthfee ?? 0
-    }));
+    const mapped = categories.map((c: any) => {
+      let teams = [];
+      try {
+        teams = c.teams ? JSON.parse(c.teams) : [];
+      } catch (e) {
+        console.error("Error parsing teams from category table:", e);
+      }
+      return {
+        id: c.id,
+        name: c.name,
+        centralFee: c.centralFee ?? c.centralfee ?? 0,
+        assistantFee: c.assistantFee ?? c.assistantfee ?? 0,
+        fourthFee: c.fourthFee ?? c.fourthfee ?? 0,
+        teams: Array.isArray(teams) ? teams : []
+      };
+    });
     res.json(mapped);
   } catch (error) {
     res.status(500).json({ error: "Error fetching categories" });
@@ -305,9 +372,10 @@ app.get("/api/categories", authenticateToken, authorize(['admin', 'manager', 'au
 });
 
 app.post("/api/categories", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
-  const { id, name, centralFee, assistantFee, fourthFee } = req.body;
+  const { id, name, centralFee, assistantFee, fourthFee, teams } = req.body;
+  const teamsStr = JSON.stringify(teams || []);
   try {
-    await sql`INSERT INTO categories (id, name, centralfee, assistantfee, fourthfee) VALUES (${id}, ${name}, ${centralFee}, ${assistantFee}, ${fourthFee})`;
+    await sql`INSERT INTO categories (id, name, centralfee, assistantfee, fourthfee, teams) VALUES (${id}, ${name}, ${centralFee}, ${assistantFee}, ${fourthFee}, ${teamsStr})`;
     res.status(201).json({ id });
   } catch (error) {
     console.error("Error creating category:", error);
@@ -325,11 +393,12 @@ app.delete("/api/categories/:id", authenticateToken, authorize(['admin', 'manage
 });
 
 app.put("/api/categories/:id", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
-  const { name, centralFee, assistantFee, fourthFee } = req.body;
+  const { name, centralFee, assistantFee, fourthFee, teams } = req.body;
+  const teamsStr = JSON.stringify(teams || []);
   try {
     await sql`
       UPDATE categories 
-      SET name = ${name}, centralfee = ${centralFee}, assistantfee = ${assistantFee}, fourthfee = ${fourthFee} 
+      SET name = ${name}, centralfee = ${centralFee}, assistantfee = ${assistantFee}, fourthfee = ${fourthFee}, teams = ${teamsStr} 
       WHERE id = ${req.params.id}
     `;
     res.json({ message: "Updated" });
@@ -356,7 +425,8 @@ app.get("/api/designations", authenticateToken, authorize(['admin', 'manager', '
       centralId: d.centralId || d.centralid,
       assistant1Id: d.assistant1Id || d.assistant1id,
       assistant2Id: d.assistant2Id || d.assistant2id,
-      fourthId: d.fourthId || d.fourthid
+      fourthId: d.fourthId || d.fourthid,
+      mayorCommissioner: d.mayor_commissioner || d.mayorcommissioner || ""
     }));
     res.json(mapped);
   } catch (error) {
@@ -367,7 +437,7 @@ app.get("/api/designations", authenticateToken, authorize(['admin', 'manager', '
 app.put("/api/designations/:id", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
   const { 
     date, teamA, teamB, matchNumber, startTime, endTime, terrain, assessor,
-    categoryId, centralId, assistant1Id, assistant2Id, fourthId 
+    categoryId, centralId, assistant1Id, assistant2Id, fourthId, mayorCommissioner
   } = req.body;
   
   try {
@@ -378,7 +448,8 @@ app.put("/api/designations/:id", authenticateToken, authorize(['admin', 'manager
           matchnumber = ${matchNumber || null}, starttime = ${startTime || null}, endtime = ${endTime || null}, 
           terrain = ${terrain || null}, assessor = ${assessor || null},
           categoryid = ${categoryId || null}, centralid = ${centralId || null}, 
-          assistant1id = ${cleanId(assistant1Id)}, assistant2id = ${cleanId(assistant2Id)}, fourthid = ${cleanId(fourthId)}
+          assistant1id = ${cleanId(assistant1Id)}, assistant2id = ${cleanId(assistant2Id)}, fourthid = ${cleanId(fourthId)},
+          mayor_commissioner = ${mayorCommissioner || null}
       WHERE id = ${req.params.id}
     `;
     res.json({ message: "Updated" });
@@ -390,7 +461,7 @@ app.put("/api/designations/:id", authenticateToken, authorize(['admin', 'manager
 app.post("/api/designations", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
   const { 
     id, date, teamA, teamB, matchNumber, startTime, endTime, terrain, assessor,
-    categoryId, centralId, assistant1Id, assistant2Id, fourthId 
+    categoryId, centralId, assistant1Id, assistant2Id, fourthId, mayorCommissioner
   } = req.body;
   
   try {
@@ -399,7 +470,7 @@ app.post("/api/designations", authenticateToken, authorize(['admin', 'manager'])
     await sql`
       INSERT INTO designations (
         id, date, teama, teamb, matchnumber, starttime, endtime, terrain, assessor,
-        categoryid, centralid, assistant1id, assistant2id, fourthid
+        categoryid, centralid, assistant1id, assistant2id, fourthid, mayor_commissioner
       )
       VALUES (
         ${id}, 
@@ -415,7 +486,8 @@ app.post("/api/designations", authenticateToken, authorize(['admin', 'manager'])
         ${centralId || null}, 
         ${cleanId(assistant1Id)}, 
         ${cleanId(assistant2Id)}, 
-        ${cleanId(fourthId)}
+        ${cleanId(fourthId)},
+        ${mayorCommissioner || null}
       )
     `;
     res.status(201).json({ id });
@@ -431,6 +503,72 @@ app.delete("/api/designations/:id", authenticateToken, authorize(['admin', 'mana
     res.json({ message: "Deleted" });
   } catch (error) {
     res.status(500).json({ error: "Error deleting designation" });
+  }
+});
+
+app.delete("/api/designations/category/:categoryId", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
+  try {
+    await sql`DELETE FROM designations WHERE categoryid = ${req.params.categoryId}`;
+    res.json({ message: "All designations of the category deleted" });
+  } catch (error) {
+    res.status(500).json({ error: "Error deleting category designations" });
+  }
+});
+
+// --- MATCH SHEETS ROUTES ---
+app.get("/api/match_sheets", authenticateToken, authorize(['admin', 'manager', 'audit']), async (req, res) => {
+  try {
+    const sheets = await sql`SELECT * FROM match_sheets`;
+    const mapped = sheets.map((s: any) => ({
+      id: s.id,
+      categoryId: s.categoryid || s.categoryId,
+      matchNumber: s.matchnumber || s.matchNumber,
+      scoreA: s.scorea ?? 0,
+      scoreB: s.scoreb ?? 0,
+      scorers: s.scorers || "",
+      cards: s.cards || "",
+      observations: s.observations || "",
+      scannedSheet: s.scanned_sheet || ""
+    }));
+    res.json(mapped);
+  } catch (error) {
+    console.error("Error fetching match sheets:", error);
+    res.status(500).json({ error: "Error fetching match sheets" });
+  }
+});
+
+app.post("/api/match_sheets", authenticateToken, authorize(['admin', 'manager']), async (req, res) => {
+  const { id, categoryId, matchNumber, scoreA, scoreB, scorers, cards, observations, scannedSheet } = req.body;
+  try {
+    await sql`
+      INSERT INTO match_sheets (id, categoryid, matchnumber, scorea, scoreb, scorers, cards, observations, scanned_sheet, savedat, updatedat)
+      VALUES (
+        ${id}, 
+        ${categoryId}, 
+        ${matchNumber}, 
+        ${Number(scoreA) ?? 0}, 
+        ${Number(scoreB) ?? 0}, 
+        ${scorers || ""}, 
+        ${cards || ""}, 
+        ${observations || ""}, 
+        ${scannedSheet || ""}, 
+        ${new Date().toISOString()}, 
+        ${new Date().toISOString()}
+      )
+      ON CONFLICT (categoryid, matchnumber)
+      DO UPDATE SET 
+        scorea = EXCLUDED.scorea,
+        scoreb = EXCLUDED.scoreb,
+        scorers = EXCLUDED.scorers,
+        cards = EXCLUDED.cards,
+        observations = EXCLUDED.observations,
+        scanned_sheet = EXCLUDED.scanned_sheet,
+        updatedat = EXCLUDED.updatedat
+    `;
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error upserting match sheet:", error);
+    res.status(500).json({ error: "Error saving match sheet" });
   }
 });
 

@@ -4,6 +4,7 @@ export interface Referee {
   phone?: string;
   grade?: string;
   createdAt: string;
+  allowedCategories?: string[];
 }
 
 export interface Category {
@@ -12,6 +13,7 @@ export interface Category {
   centralFee: number;
   assistantFee: number;
   fourthFee: number;
+  teams?: string[];
 }
 
 export interface Designation {
@@ -29,4 +31,5 @@ export interface Designation {
   endTime: string;
   terrain?: string;
   assessor?: string;
+  mayorCommissioner?: string;
 }
